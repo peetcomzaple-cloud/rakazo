@@ -2,8 +2,10 @@
 
 - Source code is public; `.env`, workspace, screenshots and deployment data are not
   committed. No API key is needed by this deterministic computer console.
-- Only an SSH-authenticated loopback forward reaches port 16080. No public tunnel,
-  DNS entry, host proxy rule or firewall ingress opening is created.
+- Port 16080 binds only to loopback and the host's Tailscale IPv4. Remote access
+  requires an authorized device on the same tailnet. Scoped INPUT and Docker DNAT
+  rules accept that port only from tailscale0; SSH loopback access is retained.
+  No wildcard binding, public tunnel, Funnel or host reverse-proxy change is made.
 - Console cookies are random, HttpOnly and SameSite=Strict. Requests enforce exact
   localhost hostnames, same-origin WebSockets and CSRF headers. Framing is denied.
 - Viewing uses a separate read-only VNC server. A modified browser cannot turn a

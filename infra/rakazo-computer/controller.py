@@ -1,4 +1,4 @@
-"""One isolated computer, accessible only through a loopback SSH tunnel.
+"""One isolated computer, accessible through Tailscale or a loopback SSH tunnel.
 
 The console runs explicit deterministic tools; it is not an LLM agent runtime.
 No credentials, shell execution endpoint, host mount, or Docker socket exists.
@@ -10,11 +10,28 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import ipaddress
+import re
 
 from aiohttp import web, WSMsgType
 from policy import Workspace, parse_command, needs_approval, validate_url
 
 ALLOWED_HOSTS = {"127.0.0.1:16080", "localhost:16080"}
+for configured in os.environ.get("COMPUTER_ALLOWED_HOSTS", "").split(","):
+    if not configured:
+        continue
+    name, separator, port = configured.lower().rpartition(":")
+    if not separator or port != "16080":
+        raise ValueError("Configured console hosts must use port 16080")
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", name) or ("." in name and not name.endswith(".ts.net")):
+            raise ValueError("Only Tailscale names are allowed")
+    else:
+        if address.version != 4 or address not in ipaddress.ip_network("100.64.0.0/10"):
+            raise ValueError("Only Tailscale IPv4 addresses are allowed")
+    ALLOWED_HOSTS.add(configured.lower())
 ROOT = Path(__file__).parent
 
 
@@ -163,7 +180,7 @@ def create_app(workspace="/workspace"):
 
     @web.middleware
     async def boundary(request, handler):
-        host = request.host
+        host = request.host.lower()
         health = request.path == "/health"
         if host not in ALLOWED_HOSTS and not (health and host == "172.30.160.2:8080"):
             raise web.HTTPForbidden(text="Untrusted host")

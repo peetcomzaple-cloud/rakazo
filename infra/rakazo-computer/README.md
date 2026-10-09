@@ -30,22 +30,29 @@ stored only in an ignored runtime file. This also blocks reaching the host throu
 its public address. Updates preserve that file when the variable is omitted.
 
 The desktop is Xvfb `:99`, 1280×800, with Openbox, Chromium, xdotool, scrot and noVNC.
-It boots to an empty desktop. The only published port is **127.0.0.1:16080**.
+It boots to an empty desktop. Port **16080** is bound only to loopback and this
+host's Tailscale IPv4. Installation requires a running Tailscale connection.
 Internal listeners are 172.30.160.2:8080 and loopback VNC 5900/5901; none bind a
 wildcard address. VNC 5900 is view-only at the server, and 5901 requires an approved
 human-control session through the console.
 
 ## Open from a client
 
-Use an SSH alias configured privately on the client; no server address is stored here:
+From any authorized device on the same tailnet, open `http://TAILSCALE_IP:16080`.
+The installer discovers the host IP and MagicDNS names and keeps them only in the
+ignored `.env`; the controller accepts these exact hosts for HTTP and WebSockets.
+Firewall rules allow remote TCP 16080 only from `tailscale0`, including Docker
+forwarding after DNAT. They reject other host interfaces. No Funnel is enabled.
+
+The original SSH tunnel also remains available. Use a privately configured alias:
 
 ```bash
 ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:16080:127.0.0.1:16080 YOUR_SSH_ALIAS
 ```
 
 Then open **http://127.0.0.1:16080** in a browser. There is no public tunnel, hostname,
-or authentication secret in the URL. The SSH account is the access boundary.
-On a phone, use an SSH client with a loopback port-forward, then the same local URL.
+or authentication secret in the URL. Tailscale device authorization or the SSH
+account is the access boundary. No application password is introduced.
 
 ## Acceptance
 
@@ -61,7 +68,7 @@ On a phone, use an SSH client with a loopback port-forward, then the same local 
    always requires approval. Paths are confined to the workspace, including symlink
    and traversal checks. Tool failures include the actual error message.
 7. Compare existing service PIDs and HTTP results before/after; unrelated services
-   must be unchanged. Check `ss -lptn` and `docker ps` for the loopback-only port.
+   must be unchanged. Check `ss -lptn` and `docker ps` for loopback and tailnet bindings.
 
 Stop only this container:
 

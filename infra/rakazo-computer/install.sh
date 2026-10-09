@@ -45,7 +45,7 @@ install -d -m 755 "$target"
 touch "$target/.rakazo-computer-owner"
 if test "$source_dir" != "$target"; then
   # Explicit code paths only; never copy or replace workspace data.
-  for path in .dockerignore Dockerfile compose.yml controller.py policy.py entrypoint.sh firewall.sh start.sh stop.sh install.sh README.md SECURITY.md tests web; do
+  for path in .dockerignore Dockerfile compose.yml controller.py policy.py configure-tailnet.py entrypoint.sh firewall.sh start.sh stop.sh install.sh README.md SECURITY.md tests web; do
     cp -a "$source_dir/$path" "$target/"
   done
 fi
@@ -53,6 +53,7 @@ install -d -m 700 -o rakazo-computer -g rakazo-computer "$target/workspace"
 umask 077
 printf 'BOT_UID=%s\nBOT_GID=%s\n' "$(id -u rakazo-computer)" "$(id -g rakazo-computer)" > "$target/.env"
 cd "$target"
+python3 configure-tailnet.py
 if test -n "${HOST_BLOCKED_IPS:-}"; then
   python3 - <<'PY' > .host-blocked-ips
 import ipaddress, os

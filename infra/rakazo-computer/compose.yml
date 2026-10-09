@@ -30,10 +30,12 @@ services:
       DISPLAY: :99
       LISTEN_IP: 172.30.160.2
       WORKSPACE: /workspace
+      COMPUTER_ALLOWED_HOSTS: ${COMPUTER_ALLOWED_HOSTS:?Run configure-tailnet.py first}
     volumes:
       - ./workspace:/workspace:rw,Z
     ports:
       - "127.0.0.1:16080:8080"
+      - "${TAILSCALE_IP:?Run configure-tailnet.py first}:16080:8080"
     networks:
       computer:
         ipv4_address: 172.30.160.2

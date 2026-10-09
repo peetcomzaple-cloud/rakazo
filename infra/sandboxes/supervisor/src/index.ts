@@ -871,19 +871,32 @@ app.post("/computers/:id/stop", async (c) => {
   const id = c.req.param("id");
   const botId = c.req.header("x-rakazo-bot-id");
   try {
-    const { container } = await managedContainer(id, botId, c.req.header("x-rakazo-space-id"));
-    // Protected container: skip stop() entirely, just clean up screen registry.
-    const info = await container.inspect();
+    const container = docker.getContainer(id);
+    let info: Docker.ContainerInspectInfo;
+    try {
+      info = await container.inspect();
+    } catch {
+      // 404 or inspect failed
+      await withComputerScreenLock(id, async () => {
+        clearComputerScreenRegistry(computerScreens, id);
+      });
+      return c.json({ ok: true });
+    }
+    
     if (info.Name === "/rakazo-computer") {
       await withComputerScreenLock(id, async () => {
         clearComputerScreenRegistry(computerScreens, id);
       });
       return c.json({ ok: true });
     }
+    
+    if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id"))) {
+      throw new ComputerIdentityError("computer identity mismatch");
+    }
+
     await withComputerScreenLock(id, async () => {
       if (info.State.Running) {
         try {
-          // Every profile on the home volume, not only screens still held in memory.
           const checkpoint = await runContainerCommand(container, [
             "bash",
             "-c",
@@ -892,7 +905,6 @@ app.post("/computers/:id/stop", async (c) => {
           if (checkpoint.code !== 0)
             throw new Error(checkpoint.stderr || "bot browsers failed to stop");
         } finally {
-          // Failed profiles remain on the durable home for recovery after restart.
           await container.stop();
           clearComputerScreenRegistry(computerScreens, id);
         }
@@ -908,8 +920,6 @@ app.post("/computers/:id/stop", async (c) => {
   } catch (error) {
     if (error instanceof ComputerIdentityError)
       return c.json({ error: "invalid computer identity" }, 403);
-    if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 404)
-      return c.json({ error: "computer not found" }, 404);
     return c.json({ error: "computer failed to stop" }, 500);
   }
 });
@@ -920,7 +930,29 @@ app.delete("/computers/:id", async (c) => {
   try {
     if (!botId) throw new Error("missing computer identity");
     return await withBotLifecycleLock(botId, async () => {
-      const { container } = await managedContainer(id, botId, c.req.header("x-rakazo-space-id"));
+      const container = docker.getContainer(id);
+      let info: Docker.ContainerInspectInfo;
+      try {
+        info = await container.inspect();
+      } catch {
+        // 404 or inspect failed
+        await withComputerScreenLock(id, async () => {
+          clearComputerScreenRegistry(computerScreens, id);
+        });
+        return c.json({ ok: true });
+      }
+
+      if (info.Name === "/rakazo-computer") {
+        await withComputerScreenLock(id, async () => {
+          clearComputerScreenRegistry(computerScreens, id);
+        });
+        return c.json({ ok: true });
+      }
+
+      if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id"))) {
+        throw new ComputerIdentityError("computer identity mismatch");
+      }
+
       await withComputerScreenLock(id, async () => {
         await container.remove({ force: true }).catch(() => undefined);
         clearComputerScreenRegistry(computerScreens, id);

@@ -401,7 +401,7 @@ export async function provisionComputer(
           maintenanceId: existing.maintenanceId ?? null,
         },
         data: {
-          state: reconnecting ? "running" : "error",
+          state: reconnecting ? "running" : "stopped",
           ...(!reconnecting && rollbackError && provisioned
             ? { providerRef: provisioned.providerRef, kind: provisioned.kind }
             : {}),

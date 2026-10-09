@@ -530,12 +530,11 @@ export class DockerSandboxProvider implements SandboxProvider {
       headers: this.headers(context, computer.botId),
       signal: context.signal,
     });
-    // 404 means the supervisor no longer has the container, which is the state we want.
-    if (!res.ok && res.status !== 404) {
-      throw new Error(
-        `sandbox stop failed: ${res.status} ${await safeBody(res, context.signal)}`.trim(),
-      );
-    }
+    // 200 = stopped ok; 404 or 'computer not found' = already gone, desired state.
+    if (res.ok || res.status === 404) return;
+    const body = await safeBody(res, context.signal);
+    if (/computer not found/i.test(body)) return;
+    throw new Error(`sandbox stop failed: ${res.status} ${body}`.trim());
   }
 
   async destroy(computer: ComputerRef, context: AdapterContext): Promise<void> {
@@ -544,11 +543,11 @@ export class DockerSandboxProvider implements SandboxProvider {
       headers: this.headers(context, computer.botId),
       signal: context.signal,
     });
-    if (!res.ok && res.status !== 404) {
-      throw new Error(
-        `sandbox destroy failed: ${res.status} ${await safeBody(res, context.signal)}`.trim(),
-      );
-    }
+    // 200 = destroyed ok; 404 or 'computer not found' = already gone, desired state.
+    if (res.ok || res.status === 404) return;
+    const body = await safeBody(res, context.signal);
+    if (/computer not found/i.test(body)) return;
+    throw new Error(`sandbox destroy failed: ${res.status} ${body}`.trim());
   }
 
   private async *walkWorkspace(

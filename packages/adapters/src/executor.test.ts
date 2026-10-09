@@ -2616,6 +2616,38 @@ description: Prepare standup notes
     );
   });
 
+  it("lets native vision backups use the catalog instead of a false custom endpoint override", async () => {
+    const provider = "openrouter";
+    const id = "openrouter/free";
+    const preference = modelPreference({
+      provider,
+      modelId: id,
+      secretId: "secret-native",
+      isDefault: true,
+    });
+    const plaintext = serializeModelSecret({
+      kind: "api_key",
+      key: "fake-native-key",
+      maxTokens: 1024,
+    });
+    const prisma = {
+      spaceModelPreference: { findFirst: vi.fn(async () => preference) },
+      userModelCredential: { findFirst: vi.fn(async () => null) },
+      secret: { findFirst: vi.fn(async () => ({ id: "secret-native", ciphertext: plaintext })) },
+    } as unknown as PrismaClient;
+    const executor = createRunExecutor({
+      prisma,
+      secretStore: { load: vi.fn(async () => plaintext) },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+    const model = await executor.resolveConnectedModel(
+      { userId: "user-1", spaceId: "ws-1" },
+      provider,
+      id,
+    );
+    expect(model.acceptsImages).toBeUndefined();
+    expect(model).toMatchObject({ provider, id, apiKey: "fake-native-key", maxTokens: 1024 });
+  });
+
   it("rejects a free-form selection when the owning preference disappears", async () => {
     const preference = modelPreference({
       provider: "openai-compatible",

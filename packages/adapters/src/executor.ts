@@ -8463,7 +8463,10 @@ async function resolveModelKey(
         maxTokens: resolved.secret.maxTokens,
         thinkingLevel:
           resolved.secret.kind === "openai_compatible" ? resolved.secret.thinkingLevel : undefined,
-        acceptsImages,
+        // Only custom endpoints have a connection capability override. Known
+        // providers use their catalog; false here would exclude every vision backup.
+        acceptsImages:
+          credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID ? acceptsImages : undefined,
         maxImagesPerPrompt:
           resolved.secret.kind === "openai_compatible"
             ? resolved.secret.maxImagesPerPrompt

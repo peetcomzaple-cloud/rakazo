@@ -364,6 +364,7 @@ import {
   currentTurnFilesInstruction,
   materializeCurrentTurnFiles,
 } from "./thread-artifacts.js";
+import { createThreadScreenPublisher } from "./thread-screen.js";
 import { advanceToolCallLoopGuard } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -3979,7 +3980,39 @@ export function createRunExecutor(deps: ExecutorDeps) {
           midTurnUserTexts.push(narration);
           publishedMidTurnUserMessage = true;
         };
-        const formatObservation = (
+        const screenArtifacts = deps.artifacts;
+        const publishScreen = screenArtifacts
+          ? createThreadScreenPublisher({
+              signal: context.signal,
+              attach: async (observation, operationId) => {
+                const attached = await attachWorkspaceFileToThread(
+                  { prisma: deps.prisma, artifacts: screenArtifacts },
+                  {
+                    spaceId: run.spaceId,
+                    userId: run.userId,
+                    botId: bot.id,
+                    groupId: thread.groupId ?? undefined,
+                    runId: run.id,
+                    filePath:
+                      observation.mimeType === "image/jpeg"
+                        ? "computer-screen.jpg"
+                        : "computer-screen.png",
+                    bytes: observation.image,
+                    operationId,
+                  },
+                );
+                return attached.block;
+              },
+              publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
+              describeError: (error) =>
+                redactSecrets(
+                  error instanceof Error ? error.message : "Could not capture the computer screen.",
+                  runSecrets,
+                ),
+            })
+          : undefined;
+        let screenObservationCount = 0;
+        const formatObservation = async (
           observation: Awaited<ReturnType<SandboxProvider["observe"]>>,
           note?: string,
           visualActionKey?: string,
@@ -3997,6 +4030,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             visualActionKey ? { unchangedVisualCount: guard.streak.count } : undefined,
           );
           lastComputerFrameId = observation.frameId;
+          await publishScreen?.(
+            async () => observation,
+            `${run.id}:${fence}:observation:${screenObservationCount++}`,
+          );
           return result;
         };
 
@@ -4679,6 +4716,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
                 context,
               );
+              await publishScreen?.(
+                async () => result.observation ?? (await deps.sandbox.observe(computer, context)),
+                effectKey,
+                true,
+              );
               return result.observation
                 ? formatObservation(
                     result.observation,
@@ -5205,6 +5247,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 name,
                 result,
               );
+              if (
+                name !== "browser_snapshot" &&
+                !(result && typeof result === "object" && "error" in result)
+              ) {
+                await publishScreen?.(
+                  () => deps.sandbox.observe(computer, context),
+                  effectKey,
+                  true,
+                );
+              }
               return result;
             }, finish);
           }

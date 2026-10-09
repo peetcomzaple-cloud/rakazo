@@ -948,4 +948,35 @@ describe("computer command identity", () => {
     expect(route("/computers/:id/exec")).toContain("computerCommandEnv(layout)");
     expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
   });
+  });
+});
+
+describe("rakazo-computer stop and delete safety", () => {
+  it("POST /computers/e51e25d4542bd3ef/stop returns 200 even when database id is used", async () => {
+    const response = await supervisorApp.request("/computers/e51e25d4542bd3ef/stop", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-rakazo-bot-id": "bot-test",
+        "x-rakazo-space-id": "space-test",
+      },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ ok: true });
+  });
+
+  it("DELETE /computers/:id with database id returns 200 and does not fail", async () => {
+    const response = await supervisorApp.request("/computers/e51e25d4542bd3ef", {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-rakazo-bot-id": "bot-test",
+        "x-rakazo-space-id": "space-test",
+      },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ ok: true });
+  });
 });

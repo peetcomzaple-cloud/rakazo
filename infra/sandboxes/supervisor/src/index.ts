@@ -316,6 +316,7 @@ app.post("/computers/:id/exec", async (c) => {
   const timeoutMs = boundedSandboxCommandTimeoutMs(body.timeoutMs);
   let container: Docker.Container;
   let layout: ReturnType<typeof screenPorts>;
+  let isOracleBox = false;
   try {
     const managed = await managedContainer(
       id,
@@ -323,6 +324,7 @@ app.post("/computers/:id/exec", async (c) => {
       c.req.header("x-rakazo-space-id"),
     );
     container = managed.container;
+    isOracleBox = managed.info.Name === "/rakazo-computer";
     const screenId = c.req.header("x-rakazo-screen-id") || c.req.header("x-rakazo-bot-id") || id;
     const screenIndex = computerScreens.get(id)?.get(screenId)?.index ?? 0;
     layout = screenPorts(screenIndex);
@@ -348,12 +350,15 @@ app.post("/computers/:id/exec", async (c) => {
       };
       try {
         let streamedStderr = "";
+        const defaultWorkingDir = isOracleBox ? "/workspace" : "/home/rakazo";
+        const defaultEnv = isOracleBox ? ["HOME=/workspace", "DISPLAY=:99"] : [];
         const result = await runContainerCommand(
           container,
           body.argv.length ? body.argv : ["/bin/echo", "ready"],
           {
-            workingDir: body.cwd ?? "/workspace",
+            workingDir: body.cwd ?? defaultWorkingDir,
             env: [
+              ...defaultEnv,
               ...computerCommandEnv(layout),
               ...Object.entries(body.env ?? {}).map(([k, v]) => `${k}=${v}`),
             ],
@@ -644,17 +649,19 @@ app.post("/computers/:id/files", async (c) => {
     })
     .parse(await c.req.json());
   try {
-    const { container } = await managedContainer(
+    const { container, info } = await managedContainer(
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
     );
+    const isOracleBox = info.Name === "/rakazo-computer";
     const target = workspaceTarget(normalizeWorkspaceRelative(body.path));
     await writeContainerFile(
       container,
       target,
       Buffer.from(body.content, "base64"),
       body.executable,
+      isOracleBox ? "/workspace" : "/home/rakazo",
     );
     return c.json({ ok: true });
   } catch (error) {
@@ -1705,10 +1712,10 @@ async function runContainerCommand(
     AttachStdout: true,
     AttachStderr: true,
     ...(options.signal ? { AttachStdin: true } : {}),
-    WorkingDir: options.workingDir ?? "/workspace",
+    WorkingDir: options.workingDir ?? "/home/rakazo",
     Env: options.env ?? [
-      "DISPLAY=:99",
-      "HOME=/workspace",
+      "DISPLAY=:1",
+      "HOME=/home/rakazo",
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     ],
   });
@@ -1820,6 +1827,7 @@ async function writeContainerFile(
   target: string,
   content: Buffer,
   executable = false,
+  workingDir = "/home/rakazo",
 ) {
   const script = [
     "import os, sys",
@@ -1833,8 +1841,8 @@ async function writeContainerFile(
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: "/workspace",
-    Env: ["HOME=/workspace"],
+    WorkingDir: workingDir,
+    Env: [`HOME=${workingDir}`],
   });
   const stream = await exec.start({ hijack: true, stdin: true });
   const chunks: Buffer[] = [];

@@ -1,11 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
   displayBotWorkspacePath,
+  normalizeWorkspacePath,
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
   teamBotWorkspaceDirectory,
 } from "./computer-support.js";
+
+describe("workspace directory paths", () => {
+  it.each(["", ".", "./", ".\\", "/./"])("lists the workspace root for %j", (value) => {
+    expect(normalizeWorkspacePath(value)).toBe("");
+    expect(resolveBotWorkspacePath("team", "bot-1", value === "/./" ? "./" : value)).toBe(
+      "bots/bot-1",
+    );
+  });
+
+  it("keeps same-directory segments inside the workspace", () => {
+    expect(normalizeWorkspacePath("./notes/./result.txt")).toBe("notes/result.txt");
+  });
+
+  it.each(["..", "./../", "notes/../secret.txt", "notes\\..\\secret.txt"])(
+    "still rejects parent traversal %j",
+    (value) => expect(() => normalizeWorkspacePath(value)).toThrow(/escapes the computer workspace/),
+  );
+});
 
 describe("Team Computer bot folders", () => {
   it("uses the bot folder for relative paths and cwd", () => {

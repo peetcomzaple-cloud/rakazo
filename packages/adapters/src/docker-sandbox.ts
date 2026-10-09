@@ -440,7 +440,10 @@ export class DockerSandboxProvider implements SandboxProvider {
       this.url(`/computers/${computer.id}/files?path=${encodeURIComponent(path)}&mode=list`),
       { headers: this.headers(context, computer.botId), signal: context.signal },
     );
-    if (!res.ok) throw new Error(`sandbox file listing failed: ${res.status}`);
+    if (!res.ok) {
+      const detail = await safeBody(res, context.signal);
+      throw new Error(`sandbox file listing failed: ${res.status}${detail ? ` ${detail}` : ""}`);
+    }
     return readSandboxJson<ComputerFileEntry[]>(res, context.signal);
   }
 

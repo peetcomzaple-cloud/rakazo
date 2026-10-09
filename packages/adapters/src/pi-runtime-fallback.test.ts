@@ -203,6 +203,57 @@ beforeEach(() => {
 });
 
 describe("Pi runtime ordered model fallback", () => {
+  it.each(["returned", "thrown", "healthy", "disabled"])(
+    "uses a strong completion only after an opted-in read failure: %s",
+    async (outcome) => {
+      const input = request([
+        { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-key" },
+      ]);
+      input.fallbackOnReadToolError = outcome !== "disabled";
+      input.tools = [
+        {
+          name: "list_files",
+          description: "Read workspace files",
+          readOnly: true,
+          inputSchema: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+        },
+      ];
+      input.executeTool = vi.fn(async () => {
+        if (outcome === "thrown") throw new Error("directory unavailable");
+        return outcome === "healthy" ? { entries: [] } : { error: "directory unavailable" };
+      });
+      input.onModelChange = vi.fn(async () => undefined);
+      let calls = 0;
+      providerState.stream.mockImplementation((target: Model<"openai-completions">) => {
+        if (calls++ === 0)
+          return stream(
+            target,
+            message(
+              target,
+              [
+                {
+                  type: "toolCall",
+                  id: "read-1",
+                  name: "list_files",
+                  arguments: { path: "missing" },
+                },
+              ],
+              "toolUse",
+            ),
+          );
+        return stream(target, message(target, [{ type: "text", text: "finished" }], "stop"));
+      });
+      await run(input);
+      expect(input.executeTool).toHaveBeenCalledOnce();
+      const escalated = outcome === "returned" || outcome === "thrown";
+      expect(providerState.stream.mock.calls[1]?.[0]).toMatchObject(escalated ? backupA : primary);
+      expect(input.onModelChange).toHaveBeenCalledTimes(escalated ? 1 : 0);
+    },
+  );
   it.each(["absent", "empty"])(
     "passes the original stream options and terminal content through with %s backups",
     async (backups) => {

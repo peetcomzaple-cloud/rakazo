@@ -134,3 +134,5 @@ export * from "./web-limits.js";
 export * from "./web-provider-factory.js";
 export * from "./web-ssrf.js";
 export * from "./web-tools.js";
+export { reconcileApprovalReminders } from "./approval-reminders.js";
+export { taskModelTiersFromEnv } from "./task-model-tiers.js";

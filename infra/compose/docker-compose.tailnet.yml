@@ -16,9 +16,15 @@ services:
 
   worker:
     volumes:
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/adapter-kit/src:/app/packages/adapter-kit/src:ro
       - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/apps/worker/src:/app/apps/worker/src:ro
       - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/core/src:/app/packages/core/src:ro
       - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/adapters/src:/app/packages/adapters/src:ro
+    environment:
+      TASK_READ_MODEL_PROVIDER: ${TASK_READ_MODEL_PROVIDER:-}
+      TASK_READ_MODEL_ID: ${TASK_READ_MODEL_ID:-}
+      TASK_STRONG_MODEL_PROVIDER: ${TASK_STRONG_MODEL_PROVIDER:-}
+      TASK_STRONG_MODEL_ID: ${TASK_STRONG_MODEL_ID:-}
 
   web:
     # Bind to the container's fixed private IP, never the wildcard address.

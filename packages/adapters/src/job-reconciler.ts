@@ -105,6 +105,7 @@ export function createJobReconciler(
     leadership?: ReconciliationLeadership;
     reconcileComputerUpdates?: () => Promise<void>;
     reconcileCloudAgents?: () => Promise<void>;
+    reconcileApprovalReminders?: () => Promise<void>;
   },
   options: { intervalMs?: number; batchSize?: number } = {},
 ) {
@@ -112,6 +113,7 @@ export function createJobReconciler(
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   let timer: ReturnType<typeof setInterval> | undefined;
   let reconciling: Promise<void> | undefined;
+  let nextFullScanAt = 0;
   let stuckCursor: Cursor | undefined;
   let runCursor: Cursor | undefined;
   let routineCursor: Cursor | undefined;
@@ -122,6 +124,14 @@ export function createJobReconciler(
     if (reconciling) return reconciling;
     reconciling = (async () => {
       if (deps.leadership && !(await deps.leadership.tryAcquire())) return;
+
+      if (deps.reconcileApprovalReminders) {
+        await deps
+          .reconcileApprovalReminders()
+          .catch((error) => getLogger().error("approval reminder reconciliation", error));
+        if (Date.now() < nextFullScanAt) return;
+        nextFullScanAt = Date.now() + intervalMs;
+      }
 
       const auxiliary = await Promise.allSettled(
         [deps.reconcileCloudAgents, deps.reconcileComputerUpdates].map(async (reconcile) =>
@@ -376,7 +386,10 @@ export function createJobReconciler(
     start() {
       if (timer) return;
       reconcileSafely();
-      timer = setInterval(reconcileSafely, intervalMs);
+      timer = setInterval(
+        reconcileSafely,
+        deps.reconcileApprovalReminders ? Math.min(5_000, intervalMs) : intervalMs,
+      );
       timer.unref?.();
     },
     async stop() {

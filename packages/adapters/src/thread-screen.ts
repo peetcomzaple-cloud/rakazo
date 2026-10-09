@@ -27,10 +27,17 @@ export function createThreadScreenPublisher(deps: {
       deps.signal.throwIfAborted();
       // A screenshot failure must not turn a successful click/type into a retry.
       // Persist a bounded, redacted error without discarding the action result.
-      await deps.publish(
-        [{ kind: "text", text: `Computer screenshot unavailable: ${deps.describeError(error).slice(0, 300)}` }],
-        `computer-screen-error:${operationId}`,
-      ).catch(() => undefined);
+      await deps
+        .publish(
+          [
+            {
+              kind: "text",
+              text: `Computer screenshot unavailable: ${deps.describeError(error).slice(0, 300)}`,
+            },
+          ],
+          `computer-screen-error:${operationId}`,
+        )
+        .catch(() => undefined);
     }
   };
 }

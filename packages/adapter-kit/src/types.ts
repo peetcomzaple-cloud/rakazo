@@ -466,6 +466,8 @@ export interface AgentRunRequest {
   model: AgentRunModel;
   /** Ordered, user-selected models eligible after provider unavailability. */
   fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id">>;
+  /** Switch at the next completion after a read-only filesystem tool fails. */
+  fallbackOnReadToolError?: boolean;
   /** Resolve one configured backup lazily so healthy primary turns do no extra auth work. */
   resolveFallbackModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
   /** Persist the selected backup against the active run lease before requesting it. */

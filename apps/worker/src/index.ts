@@ -38,6 +38,8 @@ import {
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
   reconcileCloudAgents,
+  reconcileApprovalReminders,
+  taskModelTiersFromEnv,
   reconcileComputerUpdates,
   resolveDeploymentModel,
   resolvePiSessionRoot,
@@ -175,6 +177,7 @@ async function main() {
     pushSessionExpiresAt(prisma, sessionId),
   );
   const executor = createRunExecutor({
+    taskModelTiers: taskModelTiersFromEnv(process.env),
     prisma,
     runtime,
     // Live per-account Codex catalog; never refreshes or writes credentials.
@@ -259,6 +262,7 @@ async function main() {
     leadership: createPostgresReconciliationLeadership(pool),
     reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
     reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
+    reconcileApprovalReminders: () => reconcileApprovalReminders({ prisma, events, dataDir }),
   });
   reconciler.start();
 

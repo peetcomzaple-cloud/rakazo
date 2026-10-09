@@ -70,6 +70,7 @@ import { createRuntimeContextPolicy } from "./runtime-context.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
 import { textContentArg } from "./tool-text.js";
+import { readToolFailed } from "./task-model-tiers.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
 interface ToolCallBudget {
@@ -257,6 +258,7 @@ export class PiAgentRuntime implements AgentRuntime {
           signal,
           depth: 0,
           pausePending: false,
+          readToolFailure: false,
           pendingShells: [],
         };
         resumeHost = host;
@@ -336,6 +338,11 @@ export class PiAgentRuntime implements AgentRuntime {
           isProviderFailure: (message) => providerFailures.has(message.content),
           attempted: new Set<string>(),
           nextIndex: 0,
+          consumeReadToolFailure: () => {
+            const failed = host.readToolFailure;
+            host.readToolFailure = false;
+            return failed;
+          },
           stream: (target, ctx, options) =>
             reliableModelStream(
               target.models,
@@ -1303,6 +1310,14 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
           ...(failure === undefined ? {} : { error: failure }),
           ...(host.pausePending ? { paused: true } : {}),
         };
+        if (
+          host.request.fallbackOnReadToolError &&
+          !host.pausePending &&
+          !host.signal.aborted &&
+          readToolFailed(tool.name, result, failure)
+        ) {
+          host.readToolFailure = true;
+        }
         try {
           void Promise.resolve(host.request.onToolCompleted?.(completion)).catch(() => undefined);
         } catch {
@@ -2181,6 +2196,7 @@ interface ToolHost {
   depth: number;
   agentNamespace?: string;
   pausePending: boolean;
+  readToolFailure: boolean;
   /** Shell commands that returned output and are still running. */
   pendingShells: Array<Promise<FinishedShellCommand>>;
 }
@@ -2272,6 +2288,7 @@ interface FallbackStreamState {
   signal: AbortSignal;
   attempted: Set<string>;
   nextIndex: number;
+  consumeReadToolFailure?: () => boolean;
   onSwitch(target: RuntimeModelTarget): Promise<void>;
   isProviderFailure(message: AssistantMessage): boolean;
   stream(
@@ -2524,6 +2541,12 @@ function fallbackAwareModelStream(
   const run = async () => {
     let buffered: AssistantMessageEvent[] = [];
     while (!signalAborted()) {
+      if (state.consumeReadToolFailure?.()) {
+        const next = await resolveNext(state.getActive());
+        if (failIfAborted(state.getActive())) return;
+        if (next) await state.onSwitch(next);
+        if (failIfAborted(state.getActive())) return;
+      }
       const target = state.getActive();
       lastPartial = undefined;
       let sawPartialOutput = false;

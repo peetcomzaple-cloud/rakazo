@@ -2,10 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DockerSandboxProvider } from "./docker-sandbox.js";
 
 const context = {
-  operationId: "files-test", traceId: "files-test", spaceId: "workspace", userId: "user",
+  operationId: "files-test",
+  traceId: "files-test",
+  spaceId: "workspace",
+  userId: "user",
   signal: new AbortController().signal,
 };
-const computer = { id: "container-1", providerRef: "container-1", botId: "bot-1", kind: "docker" as const };
+const computer = {
+  id: "container-1",
+  providerRef: "container-1",
+  botId: "bot-1",
+  kind: "docker" as const,
+};
 
 describe("Docker workspace file listing", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -20,9 +28,14 @@ describe("Docker workspace file listing", () => {
   });
 
   it("reports the supervisor error instead of only the HTTP status", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "directory not found" }, { status: 404 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(Response.json({ error: "directory not found" }, { status: 404 })),
+    );
     const sandbox = new DockerSandboxProvider("http://supervisor.test", "test-token");
-    await expect(sandbox.listFiles(computer, "missing", context)).rejects.toThrow(/404.*directory not found/);
+    await expect(sandbox.listFiles(computer, "missing", context)).rejects.toThrow(
+      /404.*directory not found/,
+    );
   });
 
   it("refuses parent traversal before contacting the supervisor", async () => {

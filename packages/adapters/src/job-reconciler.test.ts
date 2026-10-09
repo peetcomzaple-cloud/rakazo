@@ -41,6 +41,26 @@ function fakePrisma(
 }
 
 describe("createJobReconciler", () => {
+  it("checks approval reminders frequently without repeating full job scans", async () => {
+    vi.useFakeTimers();
+    const prisma = fakePrisma();
+    const { jobs } = publisher();
+    const remind = vi.fn(async () => undefined);
+    const reconciler = createJobReconciler({ prisma, jobs, reconcileApprovalReminders: remind });
+    try {
+      reconciler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const initialScans = vi.mocked(prisma.run.findMany).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(remind).toHaveBeenCalledTimes(4);
+      expect(prisma.run.findMany).toHaveBeenCalledTimes(initialScans);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(vi.mocked(prisma.run.findMany).mock.calls.length).toBeGreaterThan(initialScans);
+    } finally {
+      await reconciler.stop();
+      vi.useRealTimers();
+    }
+  });
   it("continues the main scans when an auxiliary reconciler fails", async () => {
     const prisma = fakePrisma();
     const { jobs } = publisher();

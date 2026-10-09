@@ -365,6 +365,8 @@ import {
   materializeCurrentTurnFiles,
 } from "./thread-artifacts.js";
 import { createThreadScreenPublisher } from "./thread-screen.js";
+import type { TaskModelTiers } from "./task-model-tiers.js";
+import { taskModelTier } from "./task-model-tiers.js";
 import { advanceToolCallLoopGuard } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -2627,6 +2629,7 @@ function runtimeFallbackModel(runtime: AgentRuntime) {
 }
 
 export interface ExecutorDeps {
+  taskModelTiers?: TaskModelTiers;
   contextStrategy?: AgentContextStrategy;
   prisma: PrismaClient;
   events: ThreadEvents;
@@ -3428,7 +3431,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ...initialBotCommandEnvironment,
         });
         // modelPinned distinguishes the captured choice from an attempt's recorded model.
-        const modelChoice = runModelChoice(run, bot);
+        const tier = taskModelTier(
+          deps.taskModelTiers,
+          task.prompt,
+          run.modelPinned || Boolean(bot.modelProvider),
+        );
+        const tierModel = tier ? deps.taskModelTiers?.[tier] : undefined;
+        const modelChoice = tierModel
+          ? {
+              modelProvider: tierModel.provider,
+              modelId: tierModel.id,
+              thinkingLevel: "off" as const,
+            }
+          : runModelChoice(run, bot);
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);
         const overrideCredential =
           hasModelOverride && modelChoice.modelProvider
@@ -4003,7 +4018,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 );
                 return attached.block;
               },
-              publish: (blocks, nonce) => publishMessage(deps, run, "bot", blocks, undefined, nonce),
+              publish: (blocks, nonce) =>
+                publishMessage(deps, run, "bot", blocks, undefined, nonce),
               describeError: (error) =>
                 redactSecrets(
                   error instanceof Error ? error.message : "Could not capture the computer screen.",
@@ -6447,6 +6463,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().warn("Backup models could not be loaded", { runId, error });
           }
         }
+        if (tier === "read" && deps.taskModelTiers) {
+          const strong = deps.taskModelTiers.strong;
+          fallbackModels = [
+            { provider: strong.provider, modelId: strong.id },
+            ...fallbackModels.filter(
+              (model) => model.provider !== strong.provider || model.modelId !== strong.id,
+            ),
+          ];
+        }
         const fallbackModelKeys = new Set(
           fallbackModels
             .filter(
@@ -6530,6 +6555,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 provider,
                 id: modelId,
               })),
+              fallbackOnReadToolError: tier === "read",
               resolveFallbackModel: fallbackModelKeys.size
                 ? async (provider, modelId) => {
                     const key = JSON.stringify([provider, modelId]);

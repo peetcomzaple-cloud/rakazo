@@ -5,7 +5,8 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveSupervisorToken } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import Docker from "dockerode";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_SUPERVISOR_FILE_REQUEST_BYTES,
   MAX_SUPERVISOR_REQUEST_BYTES,
@@ -566,13 +567,13 @@ describe("sandbox supervisor input containment", () => {
   });
 
   it("keeps the viewer read-only and uses a separate process for takeover control", () => {
-    expect(interactiveScreenCommand(false)).toMatch(/pkill .*sockets\/control-1-/);
+    expect(interactiveScreenCommand(false)).toMatch(/pkill .*sockets\/control-99-/);
     expect(interactiveScreenCommand(false)).not.toMatch(/x11vnc -display/);
     expect(interactiveScreenCommand(true, "lease-new")).toMatch(
-      /x11vnc -display .* -rfbport 0 -unixsock .*control-1-/,
+      /x11vnc -display .* -rfbport 0 -unixsock .*control-99-/,
     );
     expect(interactiveScreenCommand(true, "lease-new")).toMatch(/6080/);
-    expect(interactiveScreenCommand(true, "lease-new")).not.toContain("sockets/view-1-");
+    expect(interactiveScreenCommand(true, "lease-new")).not.toContain("sockets/view-99-");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("= 'lease-old'");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("RAKAZO_CONTROL_RELEASED");
   });
@@ -582,10 +583,10 @@ describe("sandbox supervisor input containment", () => {
     expect(nextScreenIndex(assigned, "writer")).toBe(0);
     expect(nextScreenIndex(assigned, "researcher")).toBe(1);
     expect(nextScreenIndex(assigned, "writer")).toBe(0);
-    expect(ensureScreenCommand(0, "writer", "view-token")).toContain("-display :1");
+    expect(ensureScreenCommand(0, "writer", "view-token")).toContain("-display :99");
     expect(ensureScreenCommand(0, "writer", "view-token")).toContain("seq 1 100");
-    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("Xvfb :2");
-    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("sockets/view-2-");
+    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("Xvfb :100");
+    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("sockets/view-100-");
     expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("0.0.0.0:6080");
     expect(() => nextScreenIndex(assigned, "overflow", undefined, 1)).toThrow(
       /cannot allocate another screen/,
@@ -767,17 +768,17 @@ describe("sandbox supervisor input containment", () => {
     const primary = stopExtraScreenCommand(0, "writer");
     expect(primary).toContain(`--user-data-dir=${browserProfilePathForScreen("writer")}`);
     expect(primary).toContain("kill -KILL");
-    expect(primary).not.toMatch(/Xvfb :1 /);
+    expect(primary).not.toMatch(/Xvfb :99 /);
     expect(primary).not.toContain("websockify");
-    expect(primary).toContain("sockets/view-1-");
-    expect(primary).toContain("sockets/control-1-");
-    expect(primary).toContain("rm -f /tmp/rakazo/control-token-1");
+    expect(primary).toContain("sockets/view-99-");
+    expect(primary).toContain("sockets/control-99-");
+    expect(primary).toContain("rm -f /tmp/rakazo/control-token-99");
     expect(primary).toContain("transport failed to stop");
 
     const extra = stopExtraScreenCommand(1, "researcher");
-    expect(extra).toContain("[X]vfb :2 -screen");
-    expect(extra).toContain("[f]luxbox -rc /tmp/fluxbox-home-2/.fluxbox/init");
-    expect(extra).toContain("sockets/view-2-");
+    expect(extra).toContain("[X]vfb :100 -screen");
+    expect(extra).toContain("[f]luxbox -rc /tmp/fluxbox-home-100/.fluxbox/init");
+    expect(extra).toContain("sockets/view-100-");
     expect(extra).not.toContain("websockify");
     expect(extra).toContain(`--user-data-dir=${browserProfilePathForScreen("researcher")}`);
   });
@@ -948,10 +949,32 @@ describe("computer command identity", () => {
     expect(route("/computers/:id/exec")).toContain("computerCommandEnv(layout)");
     expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
   });
-  });
 });
 
 describe("rakazo-computer stop and delete safety", () => {
+  const container = {
+    inspect: vi.fn(async () => ({
+      Name: "/rakazo-computer",
+      State: { Running: true },
+      Config: { Labels: { "rakazo.botId": "bot-test", "rakazo.spaceId": "space-test" } },
+    })),
+    stop: vi.fn(async () => undefined),
+    remove: vi.fn(async () => undefined),
+  };
+
+  beforeEach(() => {
+    container.inspect.mockClear();
+    container.stop.mockClear();
+    container.remove.mockClear();
+    vi.spyOn(Docker.prototype, "getContainer").mockReturnValue(
+      container as unknown as Docker.Container,
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("POST /computers/e51e25d4542bd3ef/stop returns 200 even when database id is used", async () => {
     const response = await supervisorApp.request("/computers/e51e25d4542bd3ef/stop", {
       method: "POST",
@@ -964,9 +987,13 @@ describe("rakazo-computer stop and delete safety", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual({ ok: true });
+    expect(Docker.prototype.getContainer).toHaveBeenCalledWith("e51e25d4542bd3ef");
+    expect(container.inspect).toHaveBeenCalledExactlyOnceWith();
+    expect(container.stop).not.toHaveBeenCalled();
+    expect(container.remove).not.toHaveBeenCalled();
   });
 
-  it("DELETE /computers/:id with database id returns 200 and does not fail", async () => {
+  it("DELETE /computers/:id with database id returns 200 without stopping or removing the container", async () => {
     const response = await supervisorApp.request("/computers/e51e25d4542bd3ef", {
       method: "DELETE",
       headers: {
@@ -978,5 +1005,9 @@ describe("rakazo-computer stop and delete safety", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).toEqual({ ok: true });
+    expect(Docker.prototype.getContainer).toHaveBeenCalledWith("e51e25d4542bd3ef");
+    expect(container.inspect).toHaveBeenCalledExactlyOnceWith();
+    expect(container.stop).not.toHaveBeenCalled();
+    expect(container.remove).not.toHaveBeenCalled();
   });
 });

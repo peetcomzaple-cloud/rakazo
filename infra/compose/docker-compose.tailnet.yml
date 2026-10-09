@@ -1,0 +1,36 @@
+# Overlay for docker-compose.images.yml. Only the native Rakazo web entry point
+# is published; sandbox supervisor and database stay inside Docker.
+services:
+  supervisor:
+    volumes:
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/infra/sandboxes/supervisor/src:/app/infra/sandboxes/supervisor/src:ro
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/core/src:/app/packages/core/src:ro
+    environment:
+      SANDBOX_COMPUTER_EGRESS: restricted
+
+  api:
+    volumes:
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/apps/api/src:/app/apps/api/src:ro
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/core/src:/app/packages/core/src:ro
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/adapters/src:/app/packages/adapters/src:ro
+
+  worker:
+    volumes:
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/apps/worker/src:/app/apps/worker/src:ro
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/core/src:/app/packages/core/src:ro
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/packages/adapters/src:/app/packages/adapters/src:ro
+
+  web:
+    # Bind to the container's fixed private IP, never the wildcard address.
+    command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "${RAKAZO_WEB_INTERNAL_IP:?Set RAKAZO_WEB_INTERNAL_IP}", "--port", "5173", "--strictPort"]
+    ports:
+      - "${TAILSCALE_IP:?Set TAILSCALE_IP}:5173:5173"
+    networks:
+      app:
+        ipv4_address: ${RAKAZO_WEB_INTERNAL_IP:?Set RAKAZO_WEB_INTERNAL_IP}
+
+networks:
+  app:
+    ipam:
+      config:
+        - subnet: ${RAKAZO_APP_SUBNET:?Set RAKAZO_APP_SUBNET}

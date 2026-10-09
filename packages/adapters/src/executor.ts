@@ -3042,7 +3042,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         provider ??= runtimeFallback?.provider;
         id ??= runtimeFallback?.id ?? null;
       }
-      if (!provider || !id) { provider = "scripted"; id = "scripted"; }
+      if (!provider || !id) throw new Error(MISSING_MODEL_MESSAGE);
       // The key is resolved for the provider that won above, not before it is known.
       const resolved = await resolveModelKey(
         deps,
@@ -3617,8 +3617,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           deployment: runDeployment,
         });
         const { credential, thinkingLevel } = selected;
-        let runModelProvider = selected.provider ?? runtimeFallback?.provider;
-        let runModelId = selected.id ?? runtimeFallback?.id;
+        const runModelProvider = selected.provider ?? runtimeFallback?.provider;
+        const runModelId = selected.id ?? runtimeFallback?.id;
         const failRunBeforeModel = async (message: string) => {
           const failed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
@@ -3669,8 +3669,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
         if (!runModelProvider || !runModelId) {
-          runModelProvider = "scripted";
-          runModelId = "scripted";
+          await failRunBeforeModel(MISSING_MODEL_MESSAGE);
+          return;
         }
         // An incompatible saved model is a configuration error. Record it on the run.
         // Leaving it for the setup catch would retry and replace the message.

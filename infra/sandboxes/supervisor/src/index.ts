@@ -196,14 +196,60 @@ app.post("/computers", async (c) => {
       const existing = await findBotContainer(body.botId, body.spaceId);
       if (existing) {
         const info = await existing.inspect();
-        const started = !info.State.Running;
-        if (started) await existing.start();
-        return c.json({
-          id: existing.id,
-          image: COMPUTER_IMAGE,
-          resumed: true,
-          started,
-        });
+        const desired = await docker.getImage(COMPUTER_IMAGE).inspect();
+        const controlPublishOk = controlPortPublicationMatches(
+          info.HostConfig.PortBindings,
+          controlViaLoopback,
+        );
+        const botNetwork =
+          networkMode === computerNetworkNameFor(body.botId) ? networkMode : undefined;
+        const endpoint = botNetwork ? info.NetworkSettings?.Networks?.[botNetwork] : undefined;
+        const botNetworkInfo =
+          botNetwork && (computerEgressMode === "restricted" || !info.State.Running)
+            ? await inspectNetworkIfPresent(botNetwork)
+            : undefined;
+        // A stop gives the network back after disconnecting the computer, and a
+        // network removed or recreated under a stopped computer leaves its endpoint
+        // on the old network ID. Either way it rejoins the network before starting:
+        // Docker would start it with no network, or not at all.
+        const reconnect =
+          Boolean(botNetwork) &&
+          !info.State.Running &&
+          (!endpoint || botNetworkInfo?.Id !== endpoint.NetworkID);
+        // A network created while egress was open keeps a generic br-* bridge
+        // the host ruleset does not match, so restricted mode must not resume a
+        // computer on it — the replace path rekeys the network instead.
+        const restrictedBridgeOk =
+          !botNetwork ||
+          reconnect ||
+          computerEgressMode !== "restricted" ||
+          botNetworkInfo?.Options?.["com.docker.network.bridge.name"] ===
+            computerBridgeNameFor(body.botId);
+        if (
+          info.Image === desired.Id &&
+          // A named-network container must also still be attached: a network
+          // deleted mid-recreate leaves HostConfig.NetworkMode set while
+          // NetworkSettings is empty, and resuming that yields no connectivity.
+          (!networkMode ||
+            (info.HostConfig.NetworkMode === networkMode &&
+              (reconnect || Boolean(info.NetworkSettings?.Networks?.[networkMode])))) &&
+          restrictedBridgeOk &&
+          info.Config.User === computerUser &&
+          controlPublishOk &&
+          (!storage.homeVolume || homeVolumeMatches(info.HostConfig.Mounts, storage.homeVolume)) &&
+          // A computer that cannot rejoin its network is replaced below instead.
+          (!reconnect ||
+            (await reconnectBotComputer(existing, body.botId, networkOwner, Boolean(endpoint))))
+        ) {
+          const started = !info.State.Running;
+          if (started) await existing.start();
+          return c.json({
+            id: existing.id,
+            image: COMPUTER_IMAGE,
+            resumed: true,
+            started,
+          });
+        }
       }
 
       // Under a space cap, serialize count+create and incompatible replace (remove+create)
@@ -316,7 +362,6 @@ app.post("/computers/:id/exec", async (c) => {
   const timeoutMs = boundedSandboxCommandTimeoutMs(body.timeoutMs);
   let container: Docker.Container;
   let layout: ReturnType<typeof screenPorts>;
-  let isOracleBox = false;
   try {
     const managed = await managedContainer(
       id,
@@ -324,7 +369,6 @@ app.post("/computers/:id/exec", async (c) => {
       c.req.header("x-rakazo-space-id"),
     );
     container = managed.container;
-    isOracleBox = managed.info.Name === "/rakazo-computer";
     const screenId = c.req.header("x-rakazo-screen-id") || c.req.header("x-rakazo-bot-id") || id;
     const screenIndex = computerScreens.get(id)?.get(screenId)?.index ?? 0;
     layout = screenPorts(screenIndex);
@@ -350,15 +394,12 @@ app.post("/computers/:id/exec", async (c) => {
       };
       try {
         let streamedStderr = "";
-        const defaultWorkingDir = isOracleBox ? "/workspace" : "/home/rakazo";
-        const defaultEnv = isOracleBox ? ["HOME=/workspace", "DISPLAY=:99"] : [];
         const result = await runContainerCommand(
           container,
           body.argv.length ? body.argv : ["/bin/echo", "ready"],
           {
-            workingDir: body.cwd ?? defaultWorkingDir,
+            workingDir: body.cwd ?? "/home/rakazo",
             env: [
-              ...defaultEnv,
               ...computerCommandEnv(layout),
               ...Object.entries(body.env ?? {}).map(([k, v]) => `${k}=${v}`),
             ],
@@ -649,19 +690,17 @@ app.post("/computers/:id/files", async (c) => {
     })
     .parse(await c.req.json());
   try {
-    const { container, info } = await managedContainer(
+    const { container } = await managedContainer(
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
     );
-    const isOracleBox = info.Name === "/rakazo-computer";
     const target = workspaceTarget(normalizeWorkspaceRelative(body.path));
     await writeContainerFile(
       container,
       target,
       Buffer.from(body.content, "base64"),
       body.executable,
-      isOracleBox ? "/workspace" : "/home/rakazo",
     );
     return c.json({ ok: true });
   } catch (error) {
@@ -1072,9 +1111,13 @@ async function ensureComputerImage() {
 async function findBotContainer(botId: string, spaceId: string) {
   const listed = await docker.listContainers({
     all: true,
+    filters: {
+      // Space IDs were preserved when workspaces became Spaces. Search by the
+      // stable bot label, then validate either generation of the Space label.
+      label: [`rakazo.botId=${botId}`],
+    },
   });
   for (const item of listed) {
-    if (item.Names.includes("/rakazo-computer")) return docker.getContainer(item.Id);
     const container = docker.getContainer(item.Id);
     const info = await container.inspect();
     if (isRakazoContainer(info, botId, spaceId)) return container;
@@ -1200,7 +1243,7 @@ async function ensureManagedScreen(
 }
 
 function isRakazoContainer(info: Docker.ContainerInspectInfo, botId: string, spaceId: string) {
-  if (info.Name === "/rakazo-computer") return true;
+  if (info.Name === "/rakazo-computer") return false;
   const labels = info.Config.Labels ?? {};
   const managed = labels["rakazo.managed"] === "true" || info.Config.Image === COMPUTER_IMAGE;
   return managed && hasComputerIdentity(labels, botId, spaceId);
@@ -1814,7 +1857,7 @@ async function observeContainer(container: Docker.Container, display = ":1") {
     'printf "WINDOW %s\\n" "$wid"',
     'printf "TITLE %s\\n" "$(test -n "$wid" && xdotool getwindowname "$wid" 2>/dev/null || true)"',
     'printf "IMAGE "',
-    "scrot - 2>/dev/null | base64 -w0",
+    "import -window root png:- 2>/dev/null | base64 -w0",
     'printf "\\n"',
   ].join("; ");
   const result = await runContainerCommand(container, ["bash", "-lc", command]);
@@ -1827,7 +1870,6 @@ async function writeContainerFile(
   target: string,
   content: Buffer,
   executable = false,
-  workingDir = "/home/rakazo",
 ) {
   const script = [
     "import os, sys",
@@ -1841,8 +1883,8 @@ async function writeContainerFile(
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: workingDir,
-    Env: [`HOME=${workingDir}`],
+    WorkingDir: "/home/rakazo",
+    Env: ["HOME=/home/rakazo"],
   });
   const stream = await exec.start({ hijack: true, stdin: true });
   const chunks: Buffer[] = [];

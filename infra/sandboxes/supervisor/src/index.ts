@@ -872,8 +872,15 @@ app.post("/computers/:id/stop", async (c) => {
   const botId = c.req.header("x-rakazo-bot-id");
   try {
     const { container } = await managedContainer(id, botId, c.req.header("x-rakazo-space-id"));
+    // Protected container: skip stop() entirely, just clean up screen registry.
+    const info = await container.inspect();
+    if (info.Name === "/rakazo-computer") {
+      await withComputerScreenLock(id, async () => {
+        clearComputerScreenRegistry(computerScreens, id);
+      });
+      return c.json({ ok: true });
+    }
     await withComputerScreenLock(id, async () => {
-      const info = await container.inspect();
       if (info.State.Running) {
         try {
           // Every profile on the home volume, not only screens still held in memory.

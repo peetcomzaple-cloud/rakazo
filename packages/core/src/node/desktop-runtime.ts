@@ -26,7 +26,7 @@ export const DEFAULT_DESKTOP_ENV: DesktopEnvironment = {
   homeDir: "/home/rakazo",
   workspaceDir: "/home/rakazo",
   browserProfilesDir: "/home/rakazo/.browser-profiles",
-  displayStart: 1,
+  displayStart: 99,
   preservePrimaryDisplay: true,
 };
 export function screenPorts(index: number, env = DEFAULT_DESKTOP_ENV) {

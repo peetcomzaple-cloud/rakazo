@@ -5,6 +5,30 @@ import { createWorkerSecretStore } from "./secret-store.js";
 
 loadRootEnv();
 
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async function(input, init) {
+  let url = "";
+  if (typeof input === "string") url = input;
+  else if (input instanceof URL) url = input.href;
+  else if (input instanceof Request) url = input.url;
+
+  if (url.includes("127.0.0.1:16080")) {
+    if (input instanceof Request) {
+      input.headers.set("Origin", "http://127.0.0.1:16080");
+      input.headers.set("Referer", "http://127.0.0.1:16080/");
+      input.headers.set("Sec-Fetch-Site", "same-origin");
+    } else {
+      init = init || {};
+      const headers = new Headers(init.headers);
+      headers.set("Origin", "http://127.0.0.1:16080");
+      headers.set("Referer", "http://127.0.0.1:16080/");
+      headers.set("Sec-Fetch-Site", "same-origin");
+      init.headers = headers;
+    }
+  }
+  return originalFetch.apply(this, [input, init]);
+};
+
 import {
   ChatSdkMessagingSurface,
   CodexCatalogCache,

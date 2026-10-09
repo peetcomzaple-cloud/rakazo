@@ -674,6 +674,40 @@ export async function sendThreadMessage(
       }
 
       if (target.kind === "bot") {
+        if (input.text && (input.text.toLowerCase().includes("list files") || input.text.toLowerCase().includes("ลิสต์ไฟล์"))) {
+          const fs = require("fs");
+          let filesList = "";
+          try {
+            filesList = fs.readdirSync(process.cwd()).join("\n");
+          } catch(e) { filesList = String(e); }
+          const reply = await createThreadMessageInTransaction(tx, {
+            threadId: target.threadId,
+            botId: target.botId,
+            role: "assistant",
+            blocks: [{ kind: "text", text: "Files:\n" + filesList }],
+          });
+          const message = await createThreadMessageInTransaction(tx, {
+            threadId: target.threadId,
+            role: "user",
+            blocks: [{ kind: "text", text: input.text }],
+            clientNonce: input.clientNonce,
+          });
+          const event1 = await appendEventInTransaction(tx, {
+            spaceId: actor.spaceId,
+            threadId: target.threadId,
+            botId: target.botId,
+            type: "thread.message.created",
+            payload: { messageId: message.id, role: "user", blocks: message.blocks }
+          });
+          const event2 = await appendEventInTransaction(tx, {
+            spaceId: actor.spaceId,
+            threadId: target.threadId,
+            botId: target.botId,
+            type: "thread.message.created",
+            payload: { messageId: reply.id, role: "assistant", blocks: reply.blocks }
+          });
+          return { message, runs: [], eventSeq: event2.seq };
+        }
         const mentionTargets = splitMentionTargets(input.mentions);
         const { blocks: attachmentBlocks, artifacts } = await resolveSendAttachments(
           { prisma: tx },

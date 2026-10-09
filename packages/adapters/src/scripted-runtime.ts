@@ -162,6 +162,15 @@ export function inferScript(
       },
     ];
   }
+  if (lower.includes("list files") || lower.includes("ลิสต์ไฟ")) {
+    return [
+      {
+        assistant: "listing files for you.",
+        toolCalls: [{ name: "shell", args: { command: "ls -la" } }],
+        complete: true,
+      },
+    ];
+  }
   if (lower.includes("message the bot named") || lower.includes("message bot named")) {
     const name = namedBot(prompt) ?? "Peer";
     const message =

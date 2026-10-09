@@ -5,7 +5,7 @@ const context = {
   operationId: "files-test", traceId: "files-test", spaceId: "workspace", userId: "user",
   signal: new AbortController().signal,
 };
-const computer = { id: "container-1", botId: "bot-1", kind: "docker" as const };
+const computer = { id: "container-1", providerRef: "container-1", botId: "bot-1", kind: "docker" as const };
 
 describe("Docker workspace file listing", () => {
   afterEach(() => vi.unstubAllGlobals());

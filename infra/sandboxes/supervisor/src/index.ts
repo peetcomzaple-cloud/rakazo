@@ -1182,6 +1182,11 @@ async function managedScreen(
   screenLeaseId: string | undefined,
 ) {
   const { container, info } = await managedContainer(id, botId, spaceId);
+  // Control must work before anyone opens the screen URL. Docker isolates these bridges.
+  if (screenNetworkMode === "isolated" && info.HostConfig.NetworkMode) {
+    const runtime = supervisorInfo ?? (await inspectSupervisorContainer());
+    if (runtime) await connectComposeScreenPeers(info.HostConfig.NetworkMode, runtime);
+  }
   return withComputerScreenLock(id, () =>
     ensureManagedScreen(id, container, info, botId, screenId, screenLeaseId),
   );
@@ -1437,12 +1442,21 @@ async function composeScreenPeerIds(info: Docker.ContainerInspectInfo) {
         label: [`com.docker.compose.project=${project}`, "com.docker.compose.service=web"],
       },
     });
-    for (const container of webContainers) peerIds.add(container.Id);
+    for (const container of webContainers) {
+      if (
+        container.Labels?.["com.docker.compose.project"] === project &&
+        container.Labels?.["com.docker.compose.service"] === "web"
+      )
+        peerIds.add(container.Id);
+    }
   }
   return peerIds;
 }
 
-async function connectComposeScreenPeers(networkName: string, info: Docker.ContainerInspectInfo) {
+export async function connectComposeScreenPeers(
+  networkName: string,
+  info: Docker.ContainerInspectInfo,
+) {
   const peerIds = await composeScreenPeerIds(info);
   const network = docker.getNetwork(networkName);
   const networkInfo = await network.inspect();

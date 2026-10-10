@@ -8,6 +8,7 @@ import { resolveSupervisorToken } from "@rakazo/core";
 import Docker from "dockerode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  connectComposeScreenPeers,
   MAX_SUPERVISOR_FILE_REQUEST_BYTES,
   MAX_SUPERVISOR_REQUEST_BYTES,
   resolveDockerSocketPath,
@@ -51,6 +52,72 @@ import {
 } from "./supervisor-logic.js";
 
 const token = resolveSupervisorToken(process.env);
+
+describe("isolated native computer control connections", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const supervisor = {
+    Id: "supervisor-test",
+    Config: { Labels: { "com.docker.compose.project": "project-test" } },
+  } as unknown as Docker.ContainerInspectInfo;
+  it("joins only its own supervisor and web, preserving existing network members", async () => {
+    const connect = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(Docker.prototype, "getNetwork").mockReturnValue({
+      inspect: vi.fn().mockResolvedValue({ Containers: { "supervisor-test": {} } }),
+      connect,
+    } as unknown as Docker.Network);
+    const list = vi.spyOn(Docker.prototype, "listContainers").mockResolvedValue([
+      {
+        Id: "own-web",
+        Labels: {
+          "com.docker.compose.project": "project-test",
+          "com.docker.compose.service": "web",
+        },
+      },
+      {
+        Id: "other-web",
+        Labels: {
+          "com.docker.compose.project": "other-project",
+          "com.docker.compose.service": "web",
+        },
+      },
+      {
+        Id: "own-worker",
+        Labels: {
+          "com.docker.compose.project": "project-test",
+          "com.docker.compose.service": "worker",
+        },
+      },
+    ] as Docker.ContainerInfo[]);
+    await connectComposeScreenPeers("computer-test", supervisor);
+    expect(list).toHaveBeenCalledExactlyOnceWith({
+      all: true,
+      filters: {
+        label: ["com.docker.compose.project=project-test", "com.docker.compose.service=web"],
+      },
+    });
+    expect(connect).toHaveBeenCalledExactlyOnceWith({ Container: "own-web" });
+  });
+  it("attaches its supervisor even when no screen viewer exists", async () => {
+    const connect = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(Docker.prototype, "getNetwork").mockReturnValue({
+      inspect: vi.fn().mockResolvedValue({ Containers: {} }),
+      connect,
+    } as unknown as Docker.Network);
+    vi.spyOn(Docker.prototype, "listContainers").mockResolvedValue([]);
+    await connectComposeScreenPeers("computer-test", supervisor);
+    expect(connect).toHaveBeenCalledExactlyOnceWith({ Container: "supervisor-test" });
+  });
+  it("surfaces network attachment failures instead of continuing to an unreachable controller", async () => {
+    vi.spyOn(Docker.prototype, "getNetwork").mockReturnValue({
+      inspect: vi.fn().mockResolvedValue({ Containers: {} }),
+      connect: vi.fn().mockRejectedValue(new Error("network attach failed")),
+    } as unknown as Docker.Network);
+    vi.spyOn(Docker.prototype, "listContainers").mockResolvedValue([]);
+    await expect(connectComposeScreenPeers("computer-test", supervisor)).rejects.toThrow(
+      "network attach failed",
+    );
+  });
+});
 
 describe("computer screen readiness", () => {
   it("waits for the server to actually answer HTTP requests before succeeding", async () => {

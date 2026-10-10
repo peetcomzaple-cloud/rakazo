@@ -3441,7 +3441,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ? {
               modelProvider: tierModel.provider,
               modelId: tierModel.id,
-              thinkingLevel: "off" as const,
+              // Keep the selected connection's native setting. Some models require reasoning.
+              thinkingLevel: null,
             }
           : runModelChoice(run, bot);
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);

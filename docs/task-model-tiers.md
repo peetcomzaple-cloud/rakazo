@@ -19,6 +19,8 @@ computer, workspace restrictions and approval policy; completed actions are not 
 Models must be available through the authenticated user's connected provider. Keys stay in the
 encrypted connection store. These variables contain only provider and model identifiers.
 Free models remain subject to their provider's rate limits; a schedule is not a quota exemption.
+Tier selection preserves the selected model's connection settings, including reasoning. It does
+not disable reasoning on endpoints that require it.
 
 The native worker reconciler checks pending approval cards every five seconds while keeping its
 normal full reconciliation interval. After a card has waited more than ten seconds, it adds one

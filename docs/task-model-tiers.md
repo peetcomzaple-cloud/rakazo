@@ -10,7 +10,10 @@ TASK_STRONG_MODEL_PROVIDER=example-provider
 TASK_STRONG_MODEL_ID=large-model
 ```
 
-File listing and file reading use the read model. Requests to edit files and other tasks use the
+The standalone command `list files` (also `list_files`, `ลิสต์ไฟล์` and `แสดงรายการไฟล์`) calls
+Rakazo's existing workspace tool directly and returns its actual filenames without an LLM call.
+It retains the native run lease, stop, workspace boundary and tool audit. More involved file
+listing and file reading requests use the read model. Requests to edit files and other tasks use the
 strong model. An explicit model pinned to a run or bot takes precedence. After a filesystem read
 fails, the next completion can use the strong model through Rakazo's native fallback mechanism.
 Provider failures also use the existing fallback mechanism. Model changes keep the same run,

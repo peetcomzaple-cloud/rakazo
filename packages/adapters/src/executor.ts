@@ -367,6 +367,7 @@ import {
 import { createThreadScreenPublisher } from "./thread-screen.js";
 import type { TaskModelTiers } from "./task-model-tiers.js";
 import { taskModelTier } from "./task-model-tiers.js";
+import { directFileListingEvents, isDirectFileListing } from "./direct-file-listing.js";
 import { advanceToolCallLoopGuard } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -6483,191 +6484,215 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
 
         try {
-          const runtimeEvents = deps.runtime.run(
-            {
-              botId: bot.id,
-              threadId: thread.id,
-              runId,
-              sourceMessageId: run.sourceMessageId,
-              onUsage: async (event) => {
-                await recordUsage(deps.prisma, event, {
-                  spaceId: run.spaceId,
-                  botId: bot.id,
-                  userId: run.userId,
-                  runId,
-                  parentRunId: runId,
-                  operationId: runId,
-                });
-              },
-              prompt,
-              contextStrategy,
-              instructions: userTurnInstructions({
-                botInstructions: runIdentityInstruction(bot, run.trigger),
-                groupContext,
-                messagingContext,
-                redactedMemoryContext: memoryContext
-                  ? redactSecrets(memoryContext, runSecrets)
-                  : undefined,
-                redactedScratchpadContext: scratchpadContext
-                  ? redactSecrets(scratchpadContext, runSecrets)
-                  : undefined,
-                hasHistoricalContext: historicalContext.length > 0,
-                historyRetrievalEnabled: contextStrategy !== "current",
-                computerInstruction,
-                pageBrowserAllowed,
-                taskCatalogInstruction,
-                workspaceInstruction,
-                agentEnvironmentInstruction,
-                botDirectory,
-                pluginLine,
-                agentSkillsLine,
-                taughtSkillsLine,
-                replyGuidance: runReplyGuidance(run.trigger),
-                disabledBuiltinTools,
-              })
-                .filter((instruction): instruction is string => Boolean(instruction))
-                .join("\n\n"),
-              history: runtimeHistory,
-              currentTurnImages,
-              tools,
-              model: {
-                provider: runModelProvider,
-                id: runModelId,
-                apiKey: resolved.oauth ? undefined : resolved.apiKey,
-                ...cloudflareRunFields(resolved),
-                baseUrl: resolved.baseUrl,
-                cacheCapabilities: resolved.cacheCapabilities,
-                contextWindow: resolved.contextWindow,
-
-                reasoning: resolved.reasoning,
-                maxTokens: resolved.maxTokens,
-                acceptsImages: resolved.acceptsImages,
-                maxImagesPerPrompt: resolved.maxImagesPerPrompt,
-                thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
-                oauth: resolved.oauth
-                  ? {
-                      credential: resolved.oauth,
-                      persist: resolved.persistOAuth,
-                      retire: resolved.retireOAuth,
-                    }
-                  : undefined,
-              },
-              fallbackModels: fallbackModels.map(({ provider, modelId }) => ({
-                provider,
-                id: modelId,
-              })),
-              fallbackOnReadToolError: tier === "read",
-              resolveFallbackModel: fallbackModelKeys.size
-                ? async (provider, modelId) => {
-                    const key = JSON.stringify([provider, modelId]);
-                    if (!fallbackModelKeys.has(key))
-                      throw new Error("Backup model is not selected");
-                    return resolveConnectedModel(
-                      { userId: run.userId, spaceId: run.spaceId },
-                      provider,
-                      modelId,
-                      (values) => runSecrets.push(...values),
-                      true,
-                    );
-                  }
-                : undefined,
-              onModelChange: async (provider, modelId) => {
-                if (!fallbackModelKeys.has(JSON.stringify([provider, modelId]))) {
-                  throw new Error("Backup model is not selected");
-                }
-                const updated = await deps.prisma.run.updateMany({
-                  where: {
-                    id: runId,
-                    status: "running",
-                    leaseOwner: workerId,
-                    leaseFence: fence,
-                  },
-                  data: { modelProvider: provider, modelId },
-                });
-                if (updated.count !== 1) {
-                  throw new Error("Run lease was lost before the backup model could be used");
-                }
-              },
-              resumeFromCheckpoint: takeoverResume?.checkpoint,
-              script,
-              allowSilentEmpty: allowSilentEmptyRun,
-              emptyResponseText,
-              executeTool: scripted ? undefined : applyTool,
-              resolveModel: scripted
-                ? undefined
-                : (provider, modelId) =>
-                    resolveConnectedModel(run, provider, modelId, (values) =>
-                      runSecrets.push(...values),
-                    ),
-              onToolCompleted: (completion) =>
-                appendToolCompletionAudit(
-                  deps,
-                  {
-                    spaceId: run.spaceId,
-                    threadId: thread.id,
-                    botId: bot.id,
-                    runId,
-                  },
-                  completion,
-                  runSecrets,
-                ),
-              claimSteering: scripted
-                ? undefined
-                : async (seenIds) => {
-                    const steering = await deps.events.claimSteering({
+          const directListing =
+            !scripted &&
+            !takeoverResume &&
+            !approvedEffects.length &&
+            tools.some((tool) => tool.name === "list_files") &&
+            isDirectFileListing(task.prompt);
+          const runtimeEvents = directListing
+            ? directFileListingEvents({
+                runId,
+                signal: context.signal,
+                execute: applyTool,
+                completed: (completion) =>
+                  appendToolCompletionAudit(
+                    deps,
+                    {
+                      spaceId: run.spaceId,
                       threadId: thread.id,
                       botId: bot.id,
                       runId,
-                      leaseOwner: workerId,
-                      leaseFence: fence,
-                      seenIds,
+                    },
+                    completion,
+                    runSecrets,
+                  ),
+              })
+            : deps.runtime.run(
+                {
+                  botId: bot.id,
+                  threadId: thread.id,
+                  runId,
+                  sourceMessageId: run.sourceMessageId,
+                  onUsage: async (event) => {
+                    await recordUsage(deps.prisma, event, {
+                      spaceId: run.spaceId,
+                      botId: bot.id,
+                      userId: run.userId,
+                      runId,
+                      parentRunId: runId,
+                      operationId: runId,
                     });
-                    return Promise.all(
-                      steering.map(async (item) => {
-                        const { images, files, unavailableInstruction } =
-                          await settleSteeringAttachmentLoads(
-                            loadCurrentTurnImages(deps, item.blocks, context),
-                            deps.artifacts
-                              ? materializeCurrentTurnFiles(
-                                  {
-                                    prisma: deps.prisma,
-                                    artifacts: deps.artifacts,
-                                    sandbox: deps.sandbox,
-                                  },
-                                  item.blocks,
-                                  {
-                                    context,
-                                    computer,
-                                    computerMode,
-                                    markWorkspaceDirty: workspaceCheckpoint.markDirty,
-                                  },
-                                )
-                              : Promise.resolve([]),
-                            item.blocks,
-                            context.signal,
-                          );
-                        workspaceCheckpoint.markFiles(files);
-                        const filesInstruction = currentTurnFilesInstruction(files);
-                        return {
-                          id: item.id,
-                          messageId: item.messageId,
-                          historyText: item.text,
-                          text: [
-                            await loadReplyContext(deps.prisma, thread.id, item.messageId),
-                            item.text,
-                            filesInstruction,
-                            unavailableInstruction,
-                          ]
-                            .filter(Boolean)
-                            .join("\n\n"),
-                          images,
-                        };
-                      }),
-                    );
                   },
-            },
-            context,
-          );
+                  prompt,
+                  contextStrategy,
+                  instructions: userTurnInstructions({
+                    botInstructions: runIdentityInstruction(bot, run.trigger),
+                    groupContext,
+                    messagingContext,
+                    redactedMemoryContext: memoryContext
+                      ? redactSecrets(memoryContext, runSecrets)
+                      : undefined,
+                    redactedScratchpadContext: scratchpadContext
+                      ? redactSecrets(scratchpadContext, runSecrets)
+                      : undefined,
+                    hasHistoricalContext: historicalContext.length > 0,
+                    historyRetrievalEnabled: contextStrategy !== "current",
+                    computerInstruction,
+                    pageBrowserAllowed,
+                    taskCatalogInstruction,
+                    workspaceInstruction,
+                    agentEnvironmentInstruction,
+                    botDirectory,
+                    pluginLine,
+                    agentSkillsLine,
+                    taughtSkillsLine,
+                    replyGuidance: runReplyGuidance(run.trigger),
+                    disabledBuiltinTools,
+                  })
+                    .filter((instruction): instruction is string => Boolean(instruction))
+                    .join("\n\n"),
+                  history: runtimeHistory,
+                  currentTurnImages,
+                  tools,
+                  model: {
+                    provider: runModelProvider,
+                    id: runModelId,
+                    apiKey: resolved.oauth ? undefined : resolved.apiKey,
+                    ...cloudflareRunFields(resolved),
+                    baseUrl: resolved.baseUrl,
+                    cacheCapabilities: resolved.cacheCapabilities,
+                    contextWindow: resolved.contextWindow,
+
+                    reasoning: resolved.reasoning,
+                    maxTokens: resolved.maxTokens,
+                    acceptsImages: resolved.acceptsImages,
+                    maxImagesPerPrompt: resolved.maxImagesPerPrompt,
+                    thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
+                    oauth: resolved.oauth
+                      ? {
+                          credential: resolved.oauth,
+                          persist: resolved.persistOAuth,
+                          retire: resolved.retireOAuth,
+                        }
+                      : undefined,
+                  },
+                  fallbackModels: fallbackModels.map(({ provider, modelId }) => ({
+                    provider,
+                    id: modelId,
+                  })),
+                  fallbackOnReadToolError: tier === "read",
+                  resolveFallbackModel: fallbackModelKeys.size
+                    ? async (provider, modelId) => {
+                        const key = JSON.stringify([provider, modelId]);
+                        if (!fallbackModelKeys.has(key))
+                          throw new Error("Backup model is not selected");
+                        return resolveConnectedModel(
+                          { userId: run.userId, spaceId: run.spaceId },
+                          provider,
+                          modelId,
+                          (values) => runSecrets.push(...values),
+                          true,
+                        );
+                      }
+                    : undefined,
+                  onModelChange: async (provider, modelId) => {
+                    if (!fallbackModelKeys.has(JSON.stringify([provider, modelId]))) {
+                      throw new Error("Backup model is not selected");
+                    }
+                    const updated = await deps.prisma.run.updateMany({
+                      where: {
+                        id: runId,
+                        status: "running",
+                        leaseOwner: workerId,
+                        leaseFence: fence,
+                      },
+                      data: { modelProvider: provider, modelId },
+                    });
+                    if (updated.count !== 1) {
+                      throw new Error("Run lease was lost before the backup model could be used");
+                    }
+                  },
+                  resumeFromCheckpoint: takeoverResume?.checkpoint,
+                  script,
+                  allowSilentEmpty: allowSilentEmptyRun,
+                  emptyResponseText,
+                  executeTool: scripted ? undefined : applyTool,
+                  resolveModel: scripted
+                    ? undefined
+                    : (provider, modelId) =>
+                        resolveConnectedModel(run, provider, modelId, (values) =>
+                          runSecrets.push(...values),
+                        ),
+                  onToolCompleted: (completion) =>
+                    appendToolCompletionAudit(
+                      deps,
+                      {
+                        spaceId: run.spaceId,
+                        threadId: thread.id,
+                        botId: bot.id,
+                        runId,
+                      },
+                      completion,
+                      runSecrets,
+                    ),
+                  claimSteering: scripted
+                    ? undefined
+                    : async (seenIds) => {
+                        const steering = await deps.events.claimSteering({
+                          threadId: thread.id,
+                          botId: bot.id,
+                          runId,
+                          leaseOwner: workerId,
+                          leaseFence: fence,
+                          seenIds,
+                        });
+                        return Promise.all(
+                          steering.map(async (item) => {
+                            const { images, files, unavailableInstruction } =
+                              await settleSteeringAttachmentLoads(
+                                loadCurrentTurnImages(deps, item.blocks, context),
+                                deps.artifacts
+                                  ? materializeCurrentTurnFiles(
+                                      {
+                                        prisma: deps.prisma,
+                                        artifacts: deps.artifacts,
+                                        sandbox: deps.sandbox,
+                                      },
+                                      item.blocks,
+                                      {
+                                        context,
+                                        computer,
+                                        computerMode,
+                                        markWorkspaceDirty: workspaceCheckpoint.markDirty,
+                                      },
+                                    )
+                                  : Promise.resolve([]),
+                                item.blocks,
+                                context.signal,
+                              );
+                            workspaceCheckpoint.markFiles(files);
+                            const filesInstruction = currentTurnFilesInstruction(files);
+                            return {
+                              id: item.id,
+                              messageId: item.messageId,
+                              historyText: item.text,
+                              text: [
+                                await loadReplyContext(deps.prisma, thread.id, item.messageId),
+                                item.text,
+                                filesInstruction,
+                                unavailableInstruction,
+                              ]
+                                .filter(Boolean)
+                                .join("\n\n"),
+                              images,
+                            };
+                          }),
+                        );
+                      },
+                },
+                context,
+              );
           for await (const event of withRuntimeCleanup(runtimeEvents, runAbortController)) {
             if (approvalPausePending) return;
             if (!leaseValid) return;

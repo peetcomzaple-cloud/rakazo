@@ -38,7 +38,7 @@ import { withCloudflareGatewayAuth } from "./cloudflare-ai-gateway.js";
 import { shortenToolResultText } from "./context-selection.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { estimateModelContextTokens } from "./model-context.js";
-import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
+import { IMAGE_RETURNING_COMPUTER_TOOLS, MODEL_CANNOT_SEE_MESSAGE } from "./model-vision.js";
 import {
   normalizeOpenAiToolParameters,
   openAiToolParametersNeedNormalization,
@@ -69,8 +69,8 @@ import type { RuntimeContextDecision } from "./runtime-context.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import type { FinishedShellCommand } from "./shell-command-stream.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
-import { textContentArg } from "./tool-text.js";
 import { readToolFailed } from "./task-model-tiers.js";
+import { textContentArg } from "./tool-text.js";
 
 const running = new Map<string, { controller: AbortController; work: Promise<void> }>();
 interface ToolCallBudget {
@@ -593,6 +593,13 @@ export class PiAgentRuntime implements AgentRuntime {
           ...initialSteering.flatMap((item) => item.images ?? []),
         ]);
         try {
+          if (
+            images?.length &&
+            (!activeStreamTarget.model.input?.includes("image") ||
+              activeStreamTarget.config.acceptsImages === false)
+          ) {
+            throw new Error(MODEL_CANNOT_SEE_MESSAGE);
+          }
           await agent.prompt(initialPrompt, images?.length ? images : undefined);
         } finally {
           try {

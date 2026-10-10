@@ -18,6 +18,7 @@ export type PiCatalogEntry = {
   id: string;
   label: string;
   billing: string;
+  supportsImages?: boolean;
   auth: PiCatalogAuth;
   oauthLabel?: string;
   authHint?: string;
@@ -122,6 +123,9 @@ function buildPiCatalog(): PiCatalogEntry[] {
         id: model.id,
         label: catalogModelLabel(model.id, model.name, modelIds),
         billing,
+        ...(provider.id !== OPENAI_COMPATIBLE_PROVIDER_ID
+          ? { supportsImages: model.input.includes("image") }
+          : {}),
         auth,
         oauthLabel,
         authHint:

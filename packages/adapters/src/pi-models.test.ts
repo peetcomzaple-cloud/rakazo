@@ -9,6 +9,18 @@ import {
 import { probeOpenAiCompatibleModels } from "./pi-openai-compatible-provider.js";
 
 describe("Pi model catalog", () => {
+  it("reports declared image support without guessing custom endpoint capabilities", () => {
+    const catalog = listPiCatalog();
+    expect(
+      catalog.find(
+        (entry) => entry.provider === "openrouter" && entry.id === "google/gemini-2.5-flash-lite",
+      ),
+    ).toMatchObject({ supportsImages: true });
+    expect(catalog.some((entry) => entry.supportsImages === false)).toBe(true);
+    expect(
+      catalog.find((entry) => entry.provider === "openai-compatible")?.supportsImages,
+    ).toBeUndefined();
+  });
   it("keeps the custom catalog independent of server model IDs", () => {
     const custom = listPiCatalog().filter((entry) => entry.provider === "openai-compatible");
     expect(custom).toHaveLength(1);

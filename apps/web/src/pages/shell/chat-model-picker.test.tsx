@@ -64,8 +64,20 @@ beforeEach(() => {
     },
   ]);
   vi.mocked(rpc.models.list).mockResolvedValue([
-    { provider: "connected", id: "small-model", label: "Small", billing: "" },
-    { provider: "connected", id: "strong-model", label: "Strong", billing: "" },
+    {
+      provider: "connected",
+      id: "small-model",
+      label: "Small",
+      billing: "",
+      supportsImages: false,
+    },
+    {
+      provider: "connected",
+      id: "strong-model",
+      label: "Strong",
+      billing: "",
+      supportsImages: true,
+    },
     { provider: "disconnected", id: "other-model", label: "Other", billing: "" },
   ]);
   container = document.createElement("div");
@@ -97,6 +109,14 @@ async function select(value: string) {
 }
 
 describe("chat model picker", () => {
+  it("labels image capabilities and warns on text-only selections without assuming unknown models can see", async () => {
+    props.bot = { ...props.bot, modelProvider: "connected", modelId: "small-model" };
+    await render();
+    expect(container.textContent).toContain("Strong · Images");
+    expect(container.textContent).toContain("Small · Text only");
+    expect(container.textContent).toContain("custom-alias · Image support unknown");
+    expect(container.textContent).toContain("This model cannot see screenshots.");
+  });
   it("offers automatic, saved custom IDs and connected catalog models without disconnected providers", async () => {
     await render();
     expect([...container.querySelectorAll("option")].map((option) => option.value)).toEqual([

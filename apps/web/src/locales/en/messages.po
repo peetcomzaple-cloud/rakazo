@@ -4780,3 +4780,19 @@ msgstr "Could not load models"
 #: src/pages/shell/chat-model-picker.tsx
 msgid "Manage models"
 msgstr "Manage models"
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Image support unknown"
+msgstr "Image support unknown"
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Images"
+msgstr "Images"
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Text only"
+msgstr "Text only"
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "This model cannot see screenshots. Select an image-capable model for desktop control."
+msgstr "This model cannot see screenshots. Select an image-capable model for desktop control."

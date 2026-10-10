@@ -4,6 +4,7 @@ const promptCalls = vi.hoisted(() => ({
   tools: [] as unknown[],
   images: [] as Array<{ type: "image"; data: string; mimeType: string }> | undefined,
   initialMessages: [] as unknown[],
+  calls: 0,
 }));
 
 vi.mock("@earendil-works/pi-agent-core", () => ({
@@ -20,6 +21,7 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
       _input: string,
       images?: Array<{ type: "image"; data: string; mimeType: string }>,
     ) {
+      promptCalls.calls++;
       promptCalls.images = images;
     }
     async waitForIdle() {}
@@ -30,7 +32,13 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
 vi.mock("@earendil-works/pi-ai/providers/all", () => ({
   builtinModels: () => ({
     getModel: (_provider: string, modelId: string) =>
-      modelId === "vision-test-model" ? { provider: "test", id: modelId } : undefined,
+      modelId === "vision-test-model" || modelId === "text-test-model"
+        ? {
+            provider: "test",
+            id: modelId,
+            input: modelId === "vision-test-model" ? ["text", "image"] : ["text"],
+          }
+        : undefined,
     streamSimple: () => {
       throw new Error("provider should not be called");
     },
@@ -57,6 +65,34 @@ describe("Pi runtime attachments", () => {
   beforeEach(() => {
     promptCalls.images = undefined;
     promptCalls.initialMessages = [];
+    promptCalls.calls = 0;
+  });
+
+  it.each([
+    { provider: "test", id: "text-test-model" },
+    { provider: "test", id: "vision-test-model", acceptsImages: false },
+  ])("rejects images clearly before calling a model without image support: %s", async (model) => {
+    const runtime = new PiAgentRuntime();
+    await expect(
+      (async () => {
+        for await (const _event of runtime.run({
+          botId: "bot",
+          threadId: "thread",
+          runId: "text-image-run",
+          prompt: "Describe this image",
+          instructions: "test",
+          history: [],
+          tools: [],
+          model,
+          currentTurnImages: [
+            { name: "shot.png", mimeType: "image/png", data: new Uint8Array([1]) },
+          ],
+        })) {
+        }
+      })(),
+    ).rejects.toThrow("This bot's model cannot see; pick a vision-capable model.");
+    expect(promptCalls.calls).toBe(0);
+    expect(promptCalls.images).toBeUndefined();
   });
 
   it("forwards current-turn images to agent.prompt", async () => {

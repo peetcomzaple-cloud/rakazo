@@ -11,6 +11,7 @@ test("chooses a model in chat, persists it and returns to automatic", async ({
     baseUrl: "http://127.0.0.1:8090/v1",
     modelId: "test-chat-model",
     apiKey: "fake-test-key",
+    supportsImages: false,
   });
   const picker = page.getByTestId("chat-model-picker");
   await expect(picker).toContainText("Automatic");
@@ -24,6 +25,11 @@ test("chooses a model in chat, persists it and returns to automatic", async ({
   await page.reload();
   await expect(picker).toContainText("test-chat-model");
   await picker.click();
+  await expect(
+    page.getByText(
+      "This model cannot see screenshots. Select an image-capable model for desktop control.",
+    ),
+  ).toBeVisible();
   await page.getByRole("combobox", { name: "Model", exact: true }).selectOption("");
   await expect(picker).toContainText("Automatic");
   await page.reload();

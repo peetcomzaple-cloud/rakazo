@@ -1190,6 +1190,8 @@ export const ModelCatalogEntrySchema = z.object({
   id: z.string(),
   label: z.string(),
   billing: z.string(),
+  /** Declared image input support. Missing means the capability is unknown. */
+  supportsImages: z.boolean().optional(),
   auth: z.enum(["api-key", "oauth", "both"]).optional(),
   oauthLabel: z.string().optional(),
   authHint: z.string().optional(),

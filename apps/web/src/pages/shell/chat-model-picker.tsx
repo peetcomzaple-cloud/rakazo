@@ -49,8 +49,26 @@ export function ChatModelPicker({
         catalog,
       ),
     ];
-    return [...new Map(choices.map((choice) => [choice.key, choice])).values()];
-  }, [credentials, catalog]);
+    return [...new Map(choices.map((choice) => [choice.key, choice])).values()].map((choice) => {
+      const capability =
+        catalog.find((entry) => entry.provider === choice.provider && entry.id === choice.modelId)
+          ?.supportsImages ??
+        credentials.find(
+          (entry) => entry.provider === choice.provider && entry.modelId === choice.modelId,
+        )?.supportsImages;
+      const capabilityLabel =
+        capability === true
+          ? t`Images`
+          : capability === false
+            ? t`Text only`
+            : t`Image support unknown`;
+      return {
+        ...choice,
+        label: `${choice.label} · ${capabilityLabel}`,
+        supportsImages: capability,
+      };
+    });
+  }, [credentials, catalog, t]);
   const visibleOptions = options.filter((option) =>
     `${option.label} ${option.modelId}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -146,6 +164,13 @@ export function ChatModelPicker({
             Automatic uses a cheaper model for reading and your account model for other tasks.
           </Trans>
         </p>
+        {options.find((option) => option.key === selected)?.supportsImages === false ? (
+          <p className="text-xs text-muted-foreground">
+            <Trans>
+              This model cannot see screenshots. Select an image-capable model for desktop control.
+            </Trans>
+          </p>
+        ) : null}
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}

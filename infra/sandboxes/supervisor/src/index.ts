@@ -1185,7 +1185,7 @@ async function managedScreen(
   // Control must work before anyone opens the screen URL. Docker isolates these bridges.
   if (screenNetworkMode === "isolated" && info.HostConfig.NetworkMode) {
     const runtime = supervisorInfo ?? (await inspectSupervisorContainer());
-    if (runtime) await connectComposeScreenPeers(info.HostConfig.NetworkMode, runtime);
+    if (runtime) await connectComposeScreenPeers(info.HostConfig.NetworkMode, runtime, false);
   }
   return withComputerScreenLock(id, () =>
     ensureManagedScreen(id, container, info, botId, screenId, screenLeaseId),
@@ -1247,8 +1247,9 @@ async function ensureManagedScreen(
   };
 }
 
-function isRakazoContainer(info: Docker.ContainerInspectInfo, botId: string, spaceId: string) {
+function isRakazoContainer(info: Docker.ContainerInspectInfo, botId?: string, spaceId?: string) {
   if (info.Name === "/rakazo-computer") return false;
+  if (!botId || !spaceId) return false;
   const labels = info.Config.Labels ?? {};
   const managed = labels["rakazo.managed"] === "true" || info.Config.Image === COMPUTER_IMAGE;
   return managed && hasComputerIdentity(labels, botId, spaceId);
@@ -1432,10 +1433,10 @@ function computerNetworkName(botId: string, info: Docker.ContainerInspectInfo | 
   return computerNetworkNameFor(botId);
 }
 
-async function composeScreenPeerIds(info: Docker.ContainerInspectInfo) {
+async function composeScreenPeerIds(info: Docker.ContainerInspectInfo, includeWeb = true) {
   const peerIds = new Set([info.Id]);
   const project = info.Config.Labels?.["com.docker.compose.project"];
-  if (project) {
+  if (project && includeWeb) {
     const webContainers = await docker.listContainers({
       all: true,
       filters: {
@@ -1456,19 +1457,30 @@ async function composeScreenPeerIds(info: Docker.ContainerInspectInfo) {
 export async function connectComposeScreenPeers(
   networkName: string,
   info: Docker.ContainerInspectInfo,
+  includeWeb = true,
 ) {
-  const peerIds = await composeScreenPeerIds(info);
+  const peerIds = await composeScreenPeerIds(info, includeWeb);
   const network = docker.getNetwork(networkName);
   const networkInfo = await network.inspect();
   const connectedIds = new Set(Object.keys(networkInfo.Containers ?? {}));
+  const missingIds = [...peerIds].filter((containerId) => !connectedIds.has(containerId));
+  if (missingIds.length) {
+    const { ApiVersion } = await docker.version();
+    const [major, minor] = (ApiVersion ?? "").split(".").map(Number);
+    if (!major || minor === undefined || !Number.isFinite(minor) || (major === 1 && minor < 48))
+      throw new Error(
+        "Isolated computer control requires Docker API 1.48 or newer for gateway priorities",
+      );
+  }
+  // The Engine field is newer than the bundled dockerode declaration.
+  const endpointConfig: Docker.EndpointSettings & { GwPriority: number } = { GwPriority: -1 };
   await Promise.all(
-    [...peerIds]
-      .filter((containerId) => !connectedIds.has(containerId))
-      .map((containerId) =>
-        network.connect({ Container: containerId }).catch((error) => {
-          if (!/already exists|already connected/i.test(String(error))) throw error;
-        }),
-      ),
+    missingIds.map((containerId) =>
+      // These are secondary networks; they must never replace the app's gateway.
+      network.connect({ Container: containerId, EndpointConfig: endpointConfig }).catch((error) => {
+        if (!/already exists|already connected/i.test(String(error))) throw error;
+      }),
+    ),
   );
 }
 

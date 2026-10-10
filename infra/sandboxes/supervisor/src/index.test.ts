@@ -54,6 +54,11 @@ import {
 const token = resolveSupervisorToken(process.env);
 
 describe("isolated native computer control connections", () => {
+  beforeEach(() =>
+    vi
+      .spyOn(Docker.prototype, "version")
+      .mockResolvedValue({ ApiVersion: "1.56" } as Docker.DockerVersion),
+  );
   afterEach(() => vi.restoreAllMocks());
   const supervisor = {
     Id: "supervisor-test",
@@ -87,7 +92,7 @@ describe("isolated native computer control connections", () => {
           "com.docker.compose.service": "worker",
         },
       },
-    ] as Docker.ContainerInfo[]);
+    ] as unknown as Docker.ContainerInfo[]);
     await connectComposeScreenPeers("computer-test", supervisor);
     expect(list).toHaveBeenCalledExactlyOnceWith({
       all: true,
@@ -95,7 +100,10 @@ describe("isolated native computer control connections", () => {
         label: ["com.docker.compose.project=project-test", "com.docker.compose.service=web"],
       },
     });
-    expect(connect).toHaveBeenCalledExactlyOnceWith({ Container: "own-web" });
+    expect(connect).toHaveBeenCalledExactlyOnceWith({
+      Container: "own-web",
+      EndpointConfig: { GwPriority: -1 },
+    });
   });
   it("attaches its supervisor even when no screen viewer exists", async () => {
     const connect = vi.fn().mockResolvedValue(undefined);
@@ -103,9 +111,13 @@ describe("isolated native computer control connections", () => {
       inspect: vi.fn().mockResolvedValue({ Containers: {} }),
       connect,
     } as unknown as Docker.Network);
-    vi.spyOn(Docker.prototype, "listContainers").mockResolvedValue([]);
-    await connectComposeScreenPeers("computer-test", supervisor);
-    expect(connect).toHaveBeenCalledExactlyOnceWith({ Container: "supervisor-test" });
+    const list = vi.spyOn(Docker.prototype, "listContainers").mockResolvedValue([]);
+    await connectComposeScreenPeers("computer-test", supervisor, false);
+    expect(list).not.toHaveBeenCalled();
+    expect(connect).toHaveBeenCalledExactlyOnceWith({
+      Container: "supervisor-test",
+      EndpointConfig: { GwPriority: -1 },
+    });
   });
   it("surfaces network attachment failures instead of continuing to an unreachable controller", async () => {
     vi.spyOn(Docker.prototype, "getNetwork").mockReturnValue({
@@ -116,6 +128,20 @@ describe("isolated native computer control connections", () => {
     await expect(connectComposeScreenPeers("computer-test", supervisor)).rejects.toThrow(
       "network attach failed",
     );
+  });
+  it("refuses Engines that cannot preserve the primary gateway", async () => {
+    const connect = vi.fn();
+    vi.spyOn(Docker.prototype, "version").mockResolvedValue({
+      ApiVersion: "1.47",
+    } as Docker.DockerVersion);
+    vi.spyOn(Docker.prototype, "getNetwork").mockReturnValue({
+      inspect: vi.fn().mockResolvedValue({ Containers: {} }),
+      connect,
+    } as unknown as Docker.Network);
+    await expect(connectComposeScreenPeers("computer-test", supervisor, false)).rejects.toThrow(
+      /API 1.48/,
+    );
+    expect(connect).not.toHaveBeenCalled();
   });
 });
 

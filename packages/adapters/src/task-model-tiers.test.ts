@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { readToolFailed, taskModelTier, taskModelTiersFromEnv } from "./task-model-tiers.js";
+import {
+  readToolFailed,
+  taskModelTier,
+  taskModelTiersFromEnv,
+  taskStrongModel,
+} from "./task-model-tiers.js";
 
 const tiers = {
   read: { provider: "example", id: "small" },
@@ -7,6 +12,28 @@ const tiers = {
 };
 
 describe("environment task model tiers", () => {
+  it("keeps each account's selected model ahead of the deployment strong model", () => {
+    expect(
+      taskStrongModel(tiers, { provider: "account-provider", defaultModel: "chosen-model" }),
+    ).toEqual({ provider: "account-provider", id: "chosen-model" });
+    expect(taskStrongModel(tiers, { provider: "example", defaultModel: "small" })).toEqual(
+      tiers.read,
+    );
+  });
+  it("escalates failed reads to the account model without retrying the same small model", () => {
+    expect(
+      taskStrongModel(tiers, { provider: "account-provider", defaultModel: "chosen-model" }, true),
+    ).toEqual({ provider: "account-provider", id: "chosen-model" });
+    expect(taskStrongModel(tiers, { provider: "example", defaultModel: "small" }, true)).toEqual(
+      tiers.strong,
+    );
+  });
+  it("uses the environment strong model when no account model is selected", () => {
+    expect(taskStrongModel(tiers, null)).toEqual(tiers.strong);
+    expect(taskStrongModel(tiers, { provider: "example", defaultModel: " " })).toEqual(
+      tiers.strong,
+    );
+  });
   it("leaves native model settings in control when absent or explicitly pinned", () => {
     expect(taskModelTiersFromEnv({})).toBeUndefined();
     expect(taskModelTier(undefined, "list files")).toBeUndefined();

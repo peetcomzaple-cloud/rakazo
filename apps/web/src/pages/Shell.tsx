@@ -261,6 +261,7 @@ import { SpaceSearchResults } from "./SpaceSearch";
 import { BotSettings, CreateBotForm } from "./shell/bot-panel";
 import { BotCreatePicker } from "./shell/bot-picker";
 import { ComposerReplyPreview, ReplyLine, TimeSeparator } from "./shell/chat-context";
+import { ChatModelPicker } from "./shell/chat-model-picker";
 import { CommandPalette, isCommandPaletteHotkey } from "./shell/command-palette";
 import {
   ClearConversationDialog,
@@ -3552,6 +3553,19 @@ export function ShellPage() {
             </button>
           </div>
           <div className="flex items-center gap-1">
+            {!inGroup && active ? (
+              <ChatModelPicker
+                key={`${active.spaceId}:${active.id}`}
+                bot={active}
+                onChange={async (patch) => {
+                  const updated = await rpc.bots.update({ botId: active.id, ...patch });
+                  setBots((current) =>
+                    current.map((bot) => (bot.id === updated.id ? updated : bot)),
+                  );
+                }}
+                onManageModels={() => openSettings("models")}
+              />
+            ) : null}
             {!inGroup && active ? (
               <button
                 type="button"

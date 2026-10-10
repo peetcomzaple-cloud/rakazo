@@ -27,6 +27,8 @@ services:
       TASK_STRONG_MODEL_ID: ${TASK_STRONG_MODEL_ID:-}
 
   web:
+    volumes:
+      - ${RAKAZO_SOURCE_DIR:?Set RAKAZO_SOURCE_DIR}/apps/web/dist:/app/apps/web/dist:ro
     # Bind to the container's fixed private IP, never the wildcard address.
     command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "${RAKAZO_WEB_INTERNAL_IP:?Set RAKAZO_WEB_INTERNAL_IP}", "--port", "5173", "--strictPort"]
     ports:

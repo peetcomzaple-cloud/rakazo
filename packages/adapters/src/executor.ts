@@ -366,7 +366,7 @@ import {
 } from "./thread-artifacts.js";
 import { createThreadScreenPublisher } from "./thread-screen.js";
 import type { TaskModelTiers } from "./task-model-tiers.js";
-import { taskModelTier } from "./task-model-tiers.js";
+import { taskModelTier, taskStrongModel } from "./task-model-tiers.js";
 import { directFileListingEvents, isDirectFileListing } from "./direct-file-listing.js";
 import { advanceToolCallLoopGuard } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
@@ -3437,7 +3437,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
           task.prompt,
           run.modelPinned || Boolean(bot.modelProvider),
         );
-        const tierModel = tier ? deps.taskModelTiers?.[tier] : undefined;
+        const tierModel =
+          tier && deps.taskModelTiers
+            ? tier === "read"
+              ? deps.taskModelTiers.read
+              : taskStrongModel(deps.taskModelTiers, defaultCredential)
+            : undefined;
         const modelChoice = tierModel
           ? {
               modelProvider: tierModel.provider,
@@ -6466,7 +6471,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         }
         if (tier === "read" && deps.taskModelTiers) {
-          const strong = deps.taskModelTiers.strong;
+          const strong = taskStrongModel(deps.taskModelTiers, defaultCredential, true);
           fallbackModels = [
             { provider: strong.provider, modelId: strong.id },
             ...fallbackModels.filter(

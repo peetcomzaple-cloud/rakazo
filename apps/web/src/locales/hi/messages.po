@@ -4756,3 +4756,27 @@ msgstr "आपका नाम"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "हमेशा चालू रहने वाले एजेंटों की आपकी टीम<0/>जिन्हें आप असली काम सौंप सकते हैं।"
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Automatic"
+msgstr ""
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Automatic uses a cheaper model for reading and your account model for other tasks."
+msgstr ""
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Choose model"
+msgstr ""
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Could not change model"
+msgstr ""
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Could not load models"
+msgstr ""
+
+#: src/pages/shell/chat-model-picker.tsx
+msgid "Manage models"
+msgstr ""

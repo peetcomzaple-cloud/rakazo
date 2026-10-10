@@ -3,6 +3,23 @@ export type TaskModelTiers = {
   strong: { provider: string; id: string };
 };
 
+/** Account model selections take precedence over the deployment's strong fallback. */
+export function taskStrongModel(
+  tiers: TaskModelTiers,
+  selected: { provider: string; defaultModel: string | null } | null,
+  escalatingRead = false,
+) {
+  const provider = selected?.provider.trim();
+  const id = selected?.defaultModel?.trim();
+  if (
+    provider &&
+    id &&
+    (!escalatingRead || provider !== tiers.read.provider || id !== tiers.read.id)
+  )
+    return { provider, id };
+  return tiers.strong;
+}
+
 export function taskModelTiersFromEnv(
   env: Record<string, string | undefined>,
 ): TaskModelTiers | undefined {

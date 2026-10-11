@@ -5,6 +5,7 @@ import type {
   ConnectionCatalogItem,
   IntegrationCatalogResult,
   IntegrationCatalogSurface,
+  IntegrationSetupState,
 } from "@rakazo/contracts";
 import {
   abortableDelay,
@@ -79,7 +80,8 @@ export function PluginsOverlay({
   activeBotId?: string;
 }) {
   const { t } = useLingui();
-  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState<"server" | "mcp" | null>(null);
+  const [setupState, setSetupState] = useState<IntegrationSetupState | null>(null);
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(CONNECTION_CATALOG_PAGE_SIZE);
   const [catalog, setCatalog] = useState<ConnectionCatalogItem[]>([]);
@@ -111,11 +113,12 @@ export function PluginsOverlay({
   const connectionAttempt = useRef<AbortController | null>(null);
 
   async function refresh() {
-    const [items, installs, rows, catalogFeed] = await Promise.all([
+    const [items, installs, rows, catalogFeed, setup] = await Promise.all([
       rpc.connections.catalog({}),
       rpc.capabilities.list(),
       rpc.connections.list(),
       optionalCatalogFeedProbe(rpc.capabilities.catalogSearch({ query: "" })),
+      rpc.integrationSetup.get(),
     ]);
     setCatalog(items);
     setConnections(rows);
@@ -134,6 +137,7 @@ export function PluginsOverlay({
       ),
     );
     setCatalogFeedEnabled(catalogFeed.enabled);
+    setSetupState(setup);
     return items;
   }
 
@@ -702,16 +706,28 @@ export function PluginsOverlay({
           <Button
             variant="outline"
             className="mb-4"
-            onClick={() => setSetupOpen((current) => !current)}
+            onClick={() => setSetupOpen((current) => (current === "mcp" ? null : "mcp"))}
           >
             <Trans>Browse MCP servers</Trans>
           </Button>
+          {setupState?.canConfigure ? (
+            <Button
+              variant="outline"
+              className="mb-4 ml-2"
+              onClick={() => setSetupOpen((current) => (current === "server" ? null : "server"))}
+            >
+              <Trans>Server integrations</Trans>
+            </Button>
+          ) : null}
           {setupOpen ? (
             <div className="mb-6">
               <IntegrationSetup
+                key={setupOpen}
+                serverSetup={setupOpen === "server"}
+                initialState={setupOpen === "server" ? setupState : undefined}
                 botId={activeBotId}
                 onDone={() => {
-                  setSetupOpen(false);
+                  setSetupOpen(null);
                   void refresh().catch((err: unknown) =>
                     setCatalogError(errorText(err, t`Could not load integrations`)),
                   );
@@ -737,43 +753,42 @@ export function PluginsOverlay({
                     <p className="text-[13.5px] leading-6 text-muted-foreground/80">
                       <Trans>Configure a plugin catalog on the server to connect apps.</Trans>
                     </p>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2">
-                      {featuredTiles.map((tile) => {
-                        const item = tile.item;
-                        const key = item ? itemKey(item) : tile.id;
-                        const disabled = tile.missing || !item;
-                        if (item && !tile.missing) {
-                          // Featured is the stable hit target for connection-tile-* in E2E.
-                          return renderCatalogTile(item, tile.label, item.logo, {
-                            tileTestId: true,
-                          });
-                        }
-                        return (
-                          <div
-                            key={key}
-                            className={`flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2 ${
-                              disabled ? "opacity-70" : ""
-                            }`}
-                          >
-                            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-foreground">
-                              {tile.label[0]}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate text-[15px] font-medium text-foreground">
-                                {tile.label}
-                              </div>
-                              {disabled ? (
-                                <div className="truncate text-[12.5px] text-muted-foreground">
-                                  <Trans>Not in the plugin catalog</Trans>
-                                </div>
-                              ) : null}
-                            </div>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-2">
+                    {featuredTiles.map((tile) => {
+                      const item = tile.item;
+                      const key = item ? itemKey(item) : tile.id;
+                      const disabled = tile.missing || !item;
+                      if (item && !tile.missing) {
+                        // Featured is the stable hit target for connection-tile-* in E2E.
+                        return renderCatalogTile(item, tile.label, item.logo, {
+                          tileTestId: true,
+                        });
+                      }
+                      return (
+                        <div
+                          key={key}
+                          className={`flex min-w-0 items-center gap-3 rounded-xl px-2.5 py-2 ${
+                            disabled ? "opacity-70" : ""
+                          }`}
+                        >
+                          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-sm font-semibold text-foreground">
+                            {tile.label[0]}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[15px] font-medium text-foreground">
+                              {tile.label}
+                            </div>
+                            {tile.missing ? (
+                              <div className="truncate text-[12.5px] text-muted-foreground">
+                                <Trans>Not in the plugin catalog</Trans>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ) : null}
 

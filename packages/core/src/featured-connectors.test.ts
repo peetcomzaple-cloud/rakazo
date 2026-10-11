@@ -46,7 +46,7 @@ describe("featured connectors", () => {
 
   it("returns null for unknown catalog entries", () => {
     expect(matchFeaturedConnectorId("salesforce")).toBeNull();
-    expect(matchFeaturedConnectorId("outlook")).toBeNull();
+    expect(matchFeaturedConnectorId("dropbox")).toBeNull();
     expect(resolveFeaturedCatalogItem("gmail", [item("github", "GitHub")])).toBeUndefined();
   });
 
@@ -59,7 +59,7 @@ describe("featured connectors", () => {
 
   it("marks all featured tiles missing when the catalog is empty", () => {
     const tiles = buildFeaturedConnectorTiles([]);
-    expect(tiles).toHaveLength(5);
+    expect(tiles).toHaveLength(7);
     expect(tiles.every((tile) => !tile.item && !tile.missing)).toBe(true);
   });
 
@@ -71,6 +71,20 @@ describe("featured connectors", () => {
     expect(gmail?.missing).toBe(false);
     expect(drive?.missing).toBe(true);
     expect(drive?.item).toBeUndefined();
+  });
+
+  it("resolves Microsoft catalog aliases without inventing an available connection", () => {
+    const catalog = [
+      item("one_drive", "One drive"),
+      item("microsoft_outlook", "Microsoft Outlook"),
+    ];
+    expect(resolveFeaturedCatalogItem("onedrive", catalog)?.slug).toBe("one_drive");
+    expect(resolveFeaturedCatalogItem("outlook", catalog)?.slug).toBe("microsoft_outlook");
+    expect(featuredConnectorProvidersMatch("microsoft_onedrive", "OneDrive")).toBe(true);
+    expect(featuredConnectorProvidersMatch("microsoft_outlook", "Outlook")).toBe(true);
+    expect(resolveFeaturedCatalogItem("onedrive", [item("gmail", "Gmail")])).toBeUndefined();
+    expect(filterConnectionCatalogItems(catalog, "")).toEqual([]);
+    expect(filterConnectionCatalogItems(catalog, "one")).toEqual([catalog[0]]);
   });
 
   it("keeps featured apps in search while removing their duplicate browse rows", () => {

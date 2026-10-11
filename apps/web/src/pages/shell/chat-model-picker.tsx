@@ -1,6 +1,11 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { Bot, ModelCatalogEntry, ModelCredential } from "@rakazo/contracts";
-import { connectedModelChoices, modelOptionKey, parseModelOptionKey } from "@rakazo/core";
+import {
+  connectedModelChoices,
+  isVisionModelId,
+  modelOptionKey,
+  parseModelOptionKey,
+} from "@rakazo/core";
 import {
   Button,
   Input,
@@ -50,12 +55,13 @@ export function ChatModelPicker({
       ),
     ];
     return [...new Map(choices.map((choice) => [choice.key, choice])).values()].map((choice) => {
-      const capability =
+      const rawCapability =
         catalog.find((entry) => entry.provider === choice.provider && entry.id === choice.modelId)
           ?.supportsImages ??
         credentials.find(
           (entry) => entry.provider === choice.provider && entry.modelId === choice.modelId,
         )?.supportsImages;
+      const capability = rawCapability ?? (isVisionModelId(choice.modelId) ? true : undefined);
       const capabilityLabel =
         capability === true
           ? t`Images`
@@ -72,7 +78,9 @@ export function ChatModelPicker({
   const visibleOptions = options.filter((option) =>
     `${option.label} ${option.modelId}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
-  const label = options.find((option) => option.key === selected)?.label ?? bot.modelId;
+  const selectedOption = options.find((option) => option.key === selected);
+  const selectedSupportsVision = selectedOption?.supportsImages ?? isVisionModelId(bot.modelId);
+  const label = selectedOption?.label ?? bot.modelId;
 
   useEffect(() => {
     if (!open) return;
@@ -130,6 +138,23 @@ export function ChatModelPicker({
         }
       >
         <span className="truncate">{selected ? label : t`Automatic`}</span>
+        {selectedSupportsVision === true ? (
+          <span
+            data-testid="vision-badge"
+            className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+            title={t`Vision-capable`}
+          >
+            Vision
+          </span>
+        ) : selectedSupportsVision === false ? (
+          <span
+            data-testid="text-badge"
+            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
+            title={t`Text only`}
+          >
+            Text
+          </span>
+        ) : null}
         <ChevronDown size={14} aria-hidden />
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 max-w-[calc(100vw-2rem)] p-3">

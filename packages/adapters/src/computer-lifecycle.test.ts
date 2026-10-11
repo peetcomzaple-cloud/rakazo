@@ -1203,7 +1203,7 @@ describe("computer provisioning", () => {
           updatedAt: expect.any(Date),
         },
         data: {
-          state: "error",
+          state: "stopped",
           providerRef: "new-provider-1",
           kind: "e2b",
         },

@@ -357,7 +357,9 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
 vi.mock("@earendil-works/pi-ai/providers/all", () => ({
   builtinModels: () => ({
     getModel: (_provider: string, modelId: string) =>
-      modelId === "dispatch-test-model" ? { provider: "test", id: modelId } : undefined,
+      modelId === "dispatch-test-model"
+        ? { provider: "test", id: modelId, input: ["text", "image"] }
+        : undefined,
     streamSimple: () => {
       throw new Error("the fake agent must not call a provider");
     },

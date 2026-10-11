@@ -61,6 +61,15 @@ const MUTATING_CONNECTOR_PATTERN =
 const COMPOUND_CONNECTOR_ACTION_PATTERN = /_(and|or|then)_/i;
 
 const EMAIL_CONNECTOR_SLUGS = new Set(["gmail", "outlook", "microsoft_outlook"]);
+const FILE_CONNECTOR_SLUGS = new Set([
+  "googledrive",
+  "google_drive",
+  "google-drive",
+  "gdrive",
+  "onedrive",
+  "one_drive",
+  "microsoft_onedrive",
+]);
 const PURCHASE_CONNECTOR_SLUGS = new Set(["stripe", "shopify", "paypal", "square"]);
 
 export type ActionApprovalRule = Pick<
@@ -136,6 +145,9 @@ function categoryMatches(
   if (normalized === "purchase") {
     if (PURCHASE_CONNECTOR_SLUGS.has(connectorKind.toLowerCase())) return consequential;
     return consequential && /purchase|pay_|charge|checkout|buy_/i.test(toolName);
+  }
+  if (normalized === "files") {
+    return FILE_CONNECTOR_SLUGS.has(connectorKind.toLowerCase()) && consequential;
   }
   return false;
 }

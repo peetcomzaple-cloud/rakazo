@@ -6532,6 +6532,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   prompt,
                   contextStrategy,
                   instructions: userTurnInstructions({
+                    prompt,
                     botInstructions: runIdentityInstruction(bot, run.trigger),
                     groupContext,
                     messagingContext,
@@ -7743,6 +7744,7 @@ function toolUsageLine(parts: {
 
 // Ordering matters: stable blocks first, volatile ones last, so the prefix stays cacheable.
 export function userTurnInstructions(parts: {
+  prompt?: string;
   botInstructions: string;
   groupContext: string | undefined;
   messagingContext: string | undefined;
@@ -7764,6 +7766,9 @@ export function userTurnInstructions(parts: {
 }): (string | undefined)[] {
   return [
     parts.botInstructions,
+    /[\u0E00-\u0E7F]/.test(parts.prompt ?? "") || /[\u0E00-\u0E7F]/.test(parts.botInstructions)
+      ? "ผู้ใช้สื่อสารเป็นภาษาไทย: คุณคือผู้ช่วยอัจฉริยะ Rakazo ที่มีคอมพิวเตอร์และแซนด์บ็อกซ์ Linux ส่วนตัวจริง พร้อมเครื่องมือ shell, launch_app, browser_navigate, computer_observe ตอบกลับเป็นภาษาไทยเสมอ\n\nข้อบังคับสำคัญ (MANDATORY RULE):\n1. เมื่อผู้ใช้สั่งให้เปิดเบราว์เซอร์หรือเข้าเว็บไซต์ (เช่น 'เปิดเบราว์เซอร์แล้วเข้า https://example.com') ให้เรียกใช้เครื่องมือ `browser_navigate` โดยส่งพารามิเตอร์ `url` ทันที ห้ามปฏิเสธและห้ามเรียกเครื่องมือชื่ออื่น\n2. ในการทำงานแบบ autonomous เมื่อผู้ใช้สั่งติดตั้งโปรแกรม เช่น 'ติดตั้ง Chrome ให้ตัวเอง' หรือสั่งเกี่ยวกับระบบ ห้ามตอบปฏิเสธโดยเด็ดขาดและห้ามตอบด้วยข้อความธรรมดาก่อน คุณต้องเรียกใช้เครื่องมือ shell ในเทิร์นแรกทันทีเพื่อตรวจสอบระบบ (เช่น `which chromium || which google-chrome; uname -m`) ห้ามคิดเอาเองว่าไม่มีเครื่องมือ หากผลลัพธ์จาก shell พบ /usr/bin/chromium ให้รายงานผลเป็นภาษาไทยว่าตรวจพบ Chromium ติดตั้งพร้อมใช้งานอยู่แล้ว และพร้อมเปิดใช้งานได้ทันที"
+      : undefined,
     parts.historyRetrievalEnabled &&
     builtinOffered(parts.disabledBuiltinTools, "search_history") &&
     builtinOffered(parts.disabledBuiltinTools, "read_history")

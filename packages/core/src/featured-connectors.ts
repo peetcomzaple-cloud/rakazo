@@ -4,6 +4,8 @@ export const FEATURED_CONNECTOR_IDS = [
   "gmail",
   "google-calendar",
   "google-drive",
+  "onedrive",
+  "outlook",
   "slack",
   "notion",
 ] as const;
@@ -14,6 +16,8 @@ export const FEATURED_CONNECTOR_LABELS: Record<FeaturedConnectorId, string> = {
   gmail: "Gmail",
   "google-calendar": "Google Calendar",
   "google-drive": "Google Drive",
+  onedrive: "OneDrive",
+  outlook: "Outlook",
   slack: "Slack",
   notion: "Notion",
 };
@@ -22,6 +26,8 @@ const FEATURED_ALIASES: Record<FeaturedConnectorId, readonly string[]> = {
   gmail: ["gmail", "googlemail", "google mail"],
   "google-calendar": ["googlecalendar", "google calendar", "google_calendar", "gcal"],
   "google-drive": ["googledrive", "google drive", "google_drive", "gdrive"],
+  onedrive: ["onedrive", "one_drive", "one drive", "microsoft_onedrive", "microsoft onedrive"],
+  outlook: ["outlook", "microsoft_outlook", "microsoft outlook"],
   slack: ["slack", "slackbot"],
   notion: ["notion", "notion.so"],
 };

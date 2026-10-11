@@ -95,6 +95,7 @@ import {
   Copy,
   FolderOpen,
   Gauge,
+  Globe,
   LayoutGrid,
   Lock,
   LogOut,
@@ -103,6 +104,7 @@ import {
   Mic,
   Monitor,
   MoreHorizontal,
+  RotateCcw,
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
@@ -1831,6 +1833,50 @@ export function ShellPage() {
       ? t`You`
       : (resolveTranscriptMemberName(activeReplyTarget.botId) ?? active?.name ?? t`Bot`)
     : undefined;
+  const liveBotStatusText = useMemo(() => {
+    if (snapshot?.run?.status === "awaiting_approval") {
+      return t`รอดำเนินการ (รออนุมัติ)`;
+    }
+    if (snapshot?.run?.status === "queued") {
+      return t`รอดำเนินการ`;
+    }
+    if (transcriptRunning || composerRunning) {
+      const lastMsg = transcriptMessages.at(-1);
+      if (lastMsg && lastMsg.role === "assistant") {
+        const textBlock = lastMsg.blocks.find((b) => b.kind === "text" && b.text);
+        if (textBlock) {
+          return t`กำลังพิมพ์…`;
+        }
+      }
+      for (let i = transcriptMessages.length - 1; i >= 0; i--) {
+        const msg = transcriptMessages[i];
+        if (msg?.blocks) {
+          for (let j = msg.blocks.length - 1; j >= 0; j--) {
+            const b = msg.blocks[j];
+            if (b?.kind === "progress" && b.text) {
+              return b.text;
+            }
+          }
+        }
+      }
+      return t`กำลังทำงาน…`;
+    }
+    if (hasControl) {
+      return t`คุณกำลังควบคุม`;
+    }
+    if (computer?.state === "running") {
+      return t`พร้อมใช้งาน`;
+    }
+    return null;
+  }, [
+    snapshot?.run?.status,
+    transcriptRunning,
+    composerRunning,
+    transcriptMessages,
+    hasControl,
+    computer?.state,
+    t,
+  ]);
   const composerMentionTargets = useMemo(
     () =>
       buildComposerMentionOptions({
@@ -3552,7 +3598,93 @@ export function ShellPage() {
               </span>
             </button>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            {!inGroup && active && liveBotStatusText ? (
+              <span
+                data-testid="live-bot-status"
+                className={cn(
+                  "hidden items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-medium sm:inline-flex",
+                  (transcriptRunning || composerRunning) &&
+                    "bg-primary/10 text-primary animate-pulse",
+                  snapshot?.run?.status === "awaiting_approval" &&
+                    "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                  snapshot?.run?.status === "queued" &&
+                    "bg-muted text-muted-foreground",
+                  hasControl && "bg-success/15 text-success",
+                  !transcriptRunning && !composerRunning && !hasControl && "bg-muted/70 text-muted-foreground",
+                )}
+              >
+                {(transcriptRunning || composerRunning) ? (
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                ) : null}
+                <span className="max-w-40 truncate">{liveBotStatusText}</span>
+              </span>
+            ) : null}
+            {!inGroup && active && (transcriptRunning || composerRunning) ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label={t`Stop`}
+                data-testid="header-stop-button"
+                onClick={() => void stopRun()}
+                disabled={sending}
+                className="h-[30px] gap-1 border-destructive/40 px-2.5 text-[12px] font-medium text-destructive hover:bg-destructive/10"
+              >
+                <Square size={12} fill="currentColor" />
+                <span><Trans>Stop</Trans></span>
+              </Button>
+            ) : null}
+            {!inGroup && active ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={t`Open browser`}
+                data-testid="header-open-browser-button"
+                title={t`เปิดเบราว์เซอร์บนจอทำงานของบอต`}
+                className="h-[30px] gap-1 px-2 text-[12px] text-foreground/80 hover:bg-accent hover:text-foreground"
+                onClick={async () => {
+                  setPanel("computer");
+                  if (!transcriptRunning && !composerRunning && !hasControl) {
+                    await sendMessage("เปิดเบราว์เซอร์แล้วเข้า https://example.com", [], crypto.randomUUID());
+                  }
+                }}
+              >
+                <Globe size={15} />
+                <span className="hidden lg:inline"><Trans>Open browser</Trans></span>
+              </Button>
+            ) : null}
+            {!inGroup && active ? (
+              hasControl ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={t`Release to bot`}
+                  data-testid="header-release-computer-button"
+                  onClick={() => void releaseComputer()}
+                  className="h-[30px] gap-1 border-success/30 px-2.5 text-[12px] font-medium text-success hover:bg-success/10"
+                >
+                  <RotateCcw size={13} />
+                  <span className="hidden sm:inline"><Trans>Release to bot</Trans></span>
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t`Take control`}
+                  data-testid="header-take-control-button"
+                  onClick={() => void openComputer(active.id)}
+                  disabled={Boolean(computerTakeoverBlocked(computer, snapshot?.run?.status))}
+                  className="h-[30px] gap-1 px-2 text-[12px] text-foreground/80 hover:bg-accent hover:text-foreground"
+                >
+                  <Monitor size={14} />
+                  <span className="hidden sm:inline"><Trans>Take control</Trans></span>
+                </Button>
+              )
+            ) : null}
             {!inGroup && active ? (
               <ChatModelPicker
                 key={`${active.spaceId}:${active.id}`}
@@ -3722,7 +3854,33 @@ export function ShellPage() {
                     <Trans>Group</Trans>
                   )}
                 </span>
-                <div className="flex gap-1">
+                <div className="flex items-center gap-1">
+                  {panel === "computer" && active && !computerOpen ? (
+                    hasControl ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label={t`Release to bot`}
+                        onClick={() => void releaseComputer()}
+                        className="h-7 gap-1 border-success/30 px-2 text-[11.5px] font-medium text-success hover:bg-success/10"
+                      >
+                        <RotateCcw size={12} />
+                        <span><Trans>Release to bot</Trans></span>
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={t`Take control`}
+                        onClick={() => void openComputer(active.id)}
+                        disabled={Boolean(computerTakeoverBlocked(computer, snapshot?.run?.status))}
+                        className="h-7 gap-1 px-2 text-[11.5px] text-foreground/80 hover:bg-accent"
+                      >
+                        <Monitor size={12} />
+                        <span><Trans>Take control</Trans></span>
+                      </Button>
+                    )
+                  ) : null}
                   {active &&
                   panel === "computer" &&
                   !computerOpen &&

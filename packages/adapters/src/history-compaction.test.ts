@@ -474,6 +474,7 @@ describe("recordHistoryCompactAttemptsExhausted", () => {
 
 describe("compactHistory", () => {
   it("summarizes the next batch, saves it through the provider, and advances the cursor", async () => {
+    vi.stubEnv("PI_DEFAULT_MODEL", "");
     const harness = compactionHarness({ deploymentModelKey: "openrouter-key" });
 
     await compactHistory(harness.deps, "thread-1");

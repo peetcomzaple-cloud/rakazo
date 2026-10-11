@@ -48,8 +48,11 @@ describe("model vision gating for computer tools", () => {
     expect(modelAcceptsImageInput("scripted", "scripted")).toBe(true);
   });
 
-  it("treats unknown models as text-only", () => {
+  it("treats unknown models as text-only unless matching known vision patterns", () => {
     expect(modelAcceptsImageInput("openrouter", "rakazo-test/unknown-future-model")).toBe(false);
+    expect(modelAcceptsImageInput("openrouter", "google/gemini-3.1-flash-lite")).toBe(true);
+    expect(modelAcceptsImageInput("openrouter", "google/gemini-2.5-flash")).toBe(true);
+    expect(modelAcceptsImageInput("openrouter", "qwen/qwen-2.5-vl-72b-instruct")).toBe(true);
   });
 
   it("keeps explicit image capability scoped to the selected model", () => {

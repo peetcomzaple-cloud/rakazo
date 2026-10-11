@@ -134,6 +134,7 @@ describe("createBackgroundJobHandlers", () => {
   );
 
   it("resolves the deployment model when no user credential is configured", async () => {
+    vi.stubEnv("PI_DEFAULT_MODEL", "");
     const prisma = {
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
       userModelCredential: { findFirst: vi.fn(async () => null) },

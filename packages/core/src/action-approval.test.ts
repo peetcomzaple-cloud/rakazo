@@ -84,6 +84,43 @@ describe("connectorToolRequiresApproval", () => {
 });
 
 describe("resolveActionApprovalDetail", () => {
+  it.each([
+    ["GMAIL_LIST_THREADS", "gmail", true, "allow"],
+    ["GMAIL_SEND_EMAIL", "gmail", true, "ask"],
+    ["MICROSOFT_OUTLOOK_SEND_EMAIL", "microsoft_outlook", undefined, "ask"],
+    ["GOOGLEDRIVE_LIST_FILES", "googledrive", true, "allow"],
+    ["GOOGLEDRIVE_UPDATE_FILE", "googledrive", true, "ask"],
+    ["GOOGLEDRIVE_DELETE_FILE", "googledrive", undefined, "ask"],
+    ["ONE_DRIVE_LIST_FILES", "one_drive", true, "allow"],
+    ["ONE_DRIVE_UPLOAD_FILE", "one_drive", undefined, "ask"],
+    ["ONE_DRIVE_GET_FILE", "one_drive", false, "ask"],
+    ["ONEDRIVE_SHARE_FILE", "onedrive", true, "ask"],
+    ["SLACK_POST_MESSAGE", "slack", false, "allow"],
+  ] as const)(
+    "applies mail/file approval rules to %s without blocking reads or unrelated apps",
+    (toolName, connectorKind, readOnly, decision) => {
+      const resolved = resolveActionApprovalDetail({
+        toolName,
+        connectorKind,
+        readOnly,
+        rules: [
+          { effect: "require_approval", matchKind: "category", matchValue: "email" },
+          { effect: "require_approval", matchKind: "category", matchValue: "files" },
+        ],
+      });
+      expect(resolved.decision).toBe(decision);
+      if (decision === "ask")
+        expect(
+          planActionGate({
+            resolved,
+            consequential: true,
+            autoReviewEnabled: true,
+            checkerConfigured: true,
+          }),
+        ).toBe("ask");
+    },
+  );
+
   it("applies category rules to declared writes with read-looking names", () => {
     const rules = [
       { effect: "require_approval" as const, matchKind: "category" as const, matchValue: "email" },

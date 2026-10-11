@@ -1,5 +1,6 @@
 import type { Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { isVisionModelId } from "@rakazo/core";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
@@ -77,12 +78,14 @@ export function resolveModelRefForVisionCheck(
   return { provider: normalizedProvider, id: normalizedId };
 }
 
+export { isVisionModelId };
+
 /**
  * Whether the selected model accepts image input, per the Pi model catalog's
- * declared `input` modalities. Unknown models are treated as text-only.
+ * declared `input` modalities or known multimodal architecture.
  * The `scripted` placeholder is resolved the same way Pi does (env default /
  * GPT-5.6 Luna fallback) before the catalog check. An explicit connection capability
- * override is honored for OpenAI-compatible models.
+ * override is honored.
  */
 export function modelAcceptsImageInput(
   provider: string,
@@ -91,7 +94,16 @@ export function modelAcceptsImageInput(
 ): boolean {
   const resolved = resolveModelRefForVisionCheck(provider, modelId);
   if (!resolved.provider || !resolved.id) return false;
-  if (acceptsImages && resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID) return true;
+  if (acceptsImages) return true;
+
+  if (
+    resolved.provider === OPENAI_COMPATIBLE_PROVIDER_ID ||
+    resolved.provider === "local"
+  ) {
+    const models = catalogModels();
+    const model = models.getModel(resolved.provider, resolved.id);
+    return Boolean(model?.input?.includes("image"));
+  }
 
   const models = catalogModels();
   let model = models.getModel(resolved.provider, resolved.id);
@@ -102,7 +114,10 @@ export function modelAcceptsImageInput(
   ) {
     model = models.getModel("openrouter", resolved.id);
   }
-  return Boolean(model?.input.includes("image"));
+  if (model) {
+    return Boolean(model.input.includes("image"));
+  }
+  return isVisionModelId(resolved.id);
 }
 
 export function filterImageReturningComputerTools<T extends { name: string }>(

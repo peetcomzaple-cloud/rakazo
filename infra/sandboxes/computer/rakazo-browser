@@ -16,6 +16,7 @@ esac
 # POSIX shell arithmetic treats a leading zero as octal.
 while [ "${DISPLAY_NUM#0}" != "$DISPLAY_NUM" ]; do DISPLAY_NUM="${DISPLAY_NUM#0}"; done
 DISPLAY_NUM="${DISPLAY_NUM:-0}"
+export DISPLAY=":${DISPLAY_NUM}"
 DEBUG_PORT=$((9221 + DISPLAY_NUM))
 if [ -n "${RAKAZO_BROWSER_PROFILE:-}" ]; then
   PROFILE="$RAKAZO_BROWSER_PROFILE"

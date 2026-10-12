@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { createThreadEvents, createThreadMessage, loadRunHistoryMessages } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 
@@ -39,11 +39,18 @@ describeIntegration("run executor lifecycle", () => {
 
   it("allows only one worker to claim a queued run", async () => {
     const seeded = await seedRun("concurrent", "write a file that says one-claim");
-
-    await Promise.all([
-      handles.executor.continueRun(seeded.run.id, "worker-a"),
-      handles.executor.continueRun(seeded.run.id, "worker-b"),
-    ]);
+    const releaseScreen = vi.fn(async () => undefined);
+    const originalRelease = handles.sandbox.releaseScreen;
+    handles.sandbox.releaseScreen = releaseScreen;
+    try {
+      await Promise.all([
+        handles.executor.continueRun(seeded.run.id, "worker-a"),
+        handles.executor.continueRun(seeded.run.id, "worker-b"),
+      ]);
+      expect(releaseScreen).toHaveBeenCalledOnce();
+    } finally {
+      handles.sandbox.releaseScreen = originalRelease;
+    }
 
     const [run, attempts] = await Promise.all([
       handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
@@ -155,7 +162,21 @@ describeIntegration("run executor lifecycle", () => {
     });
     const recordsBefore = handles.connector.records.length;
 
-    await handles.executor.continueRun(seeded.run.id, "retry-worker");
+    const releaseScreen = vi.fn(async () => undefined);
+    const originalRelease = handles.sandbox.releaseScreen;
+    handles.sandbox.releaseScreen = releaseScreen;
+    try {
+      await handles.executor.continueRun(seeded.run.id, "retry-worker");
+      // The worker lease is freed while the desktop survives the Approve wait.
+      expect(releaseScreen).not.toHaveBeenCalled();
+      expect(
+        await handles.prisma.computerExecutionLease.count({
+          where: { runId: seeded.run.id, expiresAt: { gt: new Date() } },
+        }),
+      ).toBe(0);
+    } finally {
+      handles.sandbox.releaseScreen = originalRelease;
+    }
 
     const [run, attempt, message] = await Promise.all([
       handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),

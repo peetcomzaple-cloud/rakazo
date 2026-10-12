@@ -267,7 +267,7 @@ describe("reliableModelStream idle gating", () => {
     const plainOptions = streamSimple.mock.calls[1]?.[2];
     expect(plainOptions?.signal).toBe(caller.signal);
     expect(plainOptions?.fetch).toBe(callerFetch);
-    expect(plain).toBe(inner);
+    expect(plain).toBeInstanceOf(AssistantMessageEventStream);
 
     // Before the first event the idle budget stays unarmed, so a headers
     // timeout leaves a retried attempt its own full timeoutMs.

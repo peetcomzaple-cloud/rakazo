@@ -203,6 +203,64 @@ beforeEach(() => {
 });
 
 describe("Pi runtime ordered model fallback", () => {
+  it("retries an empty finish_reason error once without replaying a completed tool", async () => {
+    const input = request();
+    let calls = 0;
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) => {
+      calls++;
+      if (calls === 1)
+        return stream(
+          target,
+          message(
+            target,
+            [
+              {
+                type: "toolCall",
+                id: "write-once",
+                name: "write_effect",
+                arguments: { value: "one" },
+              },
+            ],
+            "toolUse",
+          ),
+        );
+      if (calls === 2)
+        return stream(target, message(target, [], "error", "Provider finish_reason: error"));
+      return stream(target, message(target, [{ type: "text", text: "finished" }], "stop"));
+    });
+    const events = await run(input);
+    expect(providerState.stream).toHaveBeenCalledTimes(3);
+    expect(input.executeTool).toHaveBeenCalledOnce();
+    expect(events).toContainEqual({ type: "done", text: "finished" });
+  });
+
+  it.each(["empty", "partial", "credential", "disabled"])(
+    "bounds the retry for %s errors",
+    async (kind) => {
+      const input = request();
+      if (kind === "disabled") vi.stubEnv("MODEL_STREAM_MAX_RETRIES", "0");
+      providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+        stream(
+          target,
+          message(
+            target,
+            kind === "partial" ? [{ type: "text", text: "partial" }] : [],
+            "error",
+            kind === "credential" ? "Invalid API key" : "Provider finish_reason: error",
+          ),
+        ),
+      );
+      try {
+        await expect(run(input)).rejects.toThrow(
+          kind === "credential" ? "Invalid API key" : "Provider finish_reason: error",
+        );
+        expect(providerState.stream).toHaveBeenCalledTimes(kind === "empty" ? 2 : 1);
+        expect(input.executeTool).not.toHaveBeenCalled();
+      } finally {
+        if (kind === "disabled") vi.unstubAllEnvs();
+      }
+    },
+  );
   it.each(["returned", "thrown", "healthy", "disabled"])(
     "uses a strong completion only after an opted-in read failure: %s",
     async (outcome) => {

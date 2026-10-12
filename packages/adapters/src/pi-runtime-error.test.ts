@@ -35,6 +35,23 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 import { PiAgentRuntime } from "./pi-runtime.js";
 
 describe("Pi runtime errors", () => {
+  it("keeps the actual provider error and reports the failure in Thai", async () => {
+    await expect(
+      (async () => {
+        for await (const _event of new PiAgentRuntime().run({
+          botId: "bot",
+          threadId: "thread",
+          runId: "thai-error",
+          prompt: "อ่านหน้าเว็บให้หน่อย",
+          instructions: "test",
+          history: [],
+          tools: [],
+          model: { provider: "openai-codex", id: "gpt-test" },
+        })) {
+        }
+      })(),
+    ).rejects.toThrow("งานหยุดก่อนสำเร็จ รายละเอียด: WebSocket closed 1006");
+  });
   it("propagates provider failures instead of completing with error text", async () => {
     const runtime = new PiAgentRuntime();
     const consume = async () => {

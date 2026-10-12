@@ -61,7 +61,7 @@ describe("direct native workspace listing", () => {
     const deps = setup();
     const controller = new AbortController();
     deps.signal = controller.signal;
-    const events = directFileListingEvents(deps);
+    const events = directFileListingEvents(deps)[Symbol.asyncIterator]();
     await events.next();
     controller.abort();
     await expect(events.next()).rejects.toThrow(/aborted/);

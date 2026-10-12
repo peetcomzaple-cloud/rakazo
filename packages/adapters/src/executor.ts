@@ -188,6 +188,7 @@ import {
   shellCommandEnvironment,
 } from "./bot-secrets.js";
 import { createBrowserProvider } from "./browser-provider-factory.js";
+import { BrowserRecovery } from "./browser-recovery.js";
 import {
   browserActFromTool,
   browserNavigateFromTool,
@@ -239,6 +240,7 @@ import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
 import { formatCurrentTimeInstruction } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
+import { directFileListingEvents, isDirectFileListing } from "./direct-file-listing.js";
 import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
 import {
   COMPACTION_BATCH_SIZE,
@@ -307,6 +309,7 @@ import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
+import { userLanguageInstruction } from "./run-language.js";
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
@@ -358,6 +361,8 @@ import {
   takeoverContinuePlan,
 } from "./takeover-resume.js";
 import { TASK_CATALOG_GUIDANCE, taskCatalogFromTool } from "./task-catalog.js";
+import type { TaskModelTiers } from "./task-model-tiers.js";
+import { taskModelTier, taskStrongModel } from "./task-model-tiers.js";
 import { getActiveTeachingSession, parsePlaybook } from "./teaching-session.js";
 import {
   attachWorkspaceFileToThread,
@@ -365,9 +370,6 @@ import {
   materializeCurrentTurnFiles,
 } from "./thread-artifacts.js";
 import { createThreadScreenPublisher } from "./thread-screen.js";
-import type { TaskModelTiers } from "./task-model-tiers.js";
-import { taskModelTier, taskStrongModel } from "./task-model-tiers.js";
-import { directFileListingEvents, isDirectFileListing } from "./direct-file-listing.js";
 import { advanceToolCallLoopGuard } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -3321,6 +3323,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let leaseValid = true;
       let lastLeaseCheckAt = 0;
       let retainComputerLease = false;
+      let retainPausedScreen = false;
       let screenRelease: { computer: ComputerRef; context: AdapterContext } | undefined;
       let runAbortController: AbortController | null = null;
       let detachShutdown: (() => void) | undefined;
@@ -3877,6 +3880,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
           select: { kind: true, request: true },
         });
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
+        const browserRecovery = new BrowserRecovery(
+          pageBrowserAllowed
+            ? await deps.prisma.externalEffect.findMany({
+                where: {
+                  runId,
+                  spaceId: run.spaceId,
+                  status: "completed",
+                  kind: { in: ["browser_act", "computer_act"] },
+                },
+                orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+                select: { kind: true, result: true },
+              })
+            : [],
+        );
         const baseComputerInstruction = persistentComputerInstruction({
           heldForTakeover,
           graphicalToolsAllowed,
@@ -4280,6 +4297,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             }
           }
+          if (name === "browser_act") {
+            const blocked = browserRecovery.blockedResult();
+            if (blocked) return blocked;
+          }
           const viaConnector = !BUILTIN_AGENT_TOOL_NAMES.has(name);
           // Declared effect of the operation this call dispatches (installed API method and
           // flag). Install config is immutable per route resource, so it cannot drift before
@@ -4577,6 +4598,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!paused) {
               throw new Error("Could not pause this run for approval; try sending again.");
             }
+            // Approval pauses the worker, not the desktop. Closing Chromium here
+            // destroys the exact DOM references in the persisted approved request.
+            retainPausedScreen = true;
             await notifyRun(deps, run, {
               kind: "help",
               title: `${bot.name} needs approval`,
@@ -4626,6 +4650,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   select: { status: true },
                 });
                 if (current?.status === "waiting_input") {
+                  retainPausedScreen = true;
                   return pauseForSecret();
                 }
                 // An intended secret request resumes protected entry below, including
@@ -4639,6 +4664,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   select: { status: true },
                 });
                 if (current?.status === "waiting_input") {
+                  retainPausedScreen = true;
                   return pauseForApproval();
                 }
                 return requestApproval();
@@ -4664,8 +4690,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   result,
                 )
               : Promise.resolve(true);
-          const finish = async (result: unknown) =>
-            (await persistEffectResult(result)) ? result : uncertainEffectResult(name);
+          const finish = async (result: unknown) => {
+            const settled = (await persistEffectResult(result))
+              ? result
+              : uncertainEffectResult(name);
+            browserRecovery.record(name, settled);
+            return settled;
+          };
           const registerRunSecrets = (values: string[]) => {
             const additions = values.filter((value) => !runSecrets.includes(value));
             if (additions.length === 0) return;
@@ -5967,6 +5998,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!paused) {
               throw new Error("Could not pause this run for protected input; try sending again.");
             }
+            retainPausedScreen = true;
             await notifyRun(deps, run, {
               kind: "help",
               title: `${bot.name} needs a code`,
@@ -6796,6 +6828,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 offeredActions: event.actions,
               });
               if (!paused) return;
+              retainPausedScreen = true;
               await notifyRun(deps, run, {
                 kind: "help",
                 title: `${bot.name} needs an answer`,
@@ -7027,6 +7060,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           if (approvalPausePending || !leaseValid) return;
           approvedEffectReplays.assertDrained();
+          const blockedBrowser = browserRecovery.blockedResult();
+          if (blockedBrowser) {
+            throw new Error(
+              /[\u0E00-\u0E7F]/.test(taskPrompt)
+                ? `ยังทำงานไม่สำเร็จ: เครื่องมือคลิกหน้าเว็บล้มซ้ำ จึงหยุดการลองซ้ำ ต้องตรวจจอแล้วใช้เครื่องมือเดสก์ท็อปต่อ รายละเอียด: ${blockedBrowser.error}`
+                : String(blockedBrowser.error),
+            );
+          }
           pendingProgress += progressRedactor.finish();
           await flushProgress();
 
@@ -7282,7 +7323,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         detachShutdown?.();
         clearInterval(heartbeat);
         if (!retainComputerLease) {
-          if (screenRelease) {
+          // An immediate answer may already have queued the continuation. The
+          // paused attempt must not close the desktop that continuation uses.
+          if (screenRelease && !retainPausedScreen) {
             await deps.sandbox
               .releaseScreen?.(screenRelease.computer, screenRelease.context)
               .catch(() => undefined);
@@ -7766,9 +7809,7 @@ export function userTurnInstructions(parts: {
 }): (string | undefined)[] {
   return [
     parts.botInstructions,
-    /[\u0E00-\u0E7F]/.test(parts.prompt ?? "") || /[\u0E00-\u0E7F]/.test(parts.botInstructions)
-      ? "ผู้ใช้สื่อสารเป็นภาษาไทย: คุณคือผู้ช่วยอัจฉริยะ Rakazo ที่มีคอมพิวเตอร์และแซนด์บ็อกซ์ Linux ส่วนตัวจริง พร้อมเครื่องมือ shell, launch_app, browser_navigate, computer_observe ตอบกลับเป็นภาษาไทยเสมอ\n\nข้อบังคับสำคัญ (MANDATORY RULE):\n1. เมื่อผู้ใช้สั่งให้เปิดเบราว์เซอร์หรือเข้าเว็บไซต์ (เช่น 'เปิดเบราว์เซอร์แล้วเข้า https://example.com') ให้เรียกใช้เครื่องมือ `browser_navigate` โดยส่งพารามิเตอร์ `url` ทันที ห้ามปฏิเสธและห้ามเรียกเครื่องมือชื่ออื่น\n2. ในการทำงานแบบ autonomous เมื่อผู้ใช้สั่งติดตั้งโปรแกรม เช่น 'ติดตั้ง Chrome ให้ตัวเอง' หรือสั่งเกี่ยวกับระบบ ห้ามตอบปฏิเสธโดยเด็ดขาดและห้ามตอบด้วยข้อความธรรมดาก่อน คุณต้องเรียกใช้เครื่องมือ shell ในเทิร์นแรกทันทีเพื่อตรวจสอบระบบ (เช่น `which chromium || which google-chrome; uname -m`) ห้ามคิดเอาเองว่าไม่มีเครื่องมือ หากผลลัพธ์จาก shell พบ /usr/bin/chromium ให้รายงานผลเป็นภาษาไทยว่าตรวจพบ Chromium ติดตั้งพร้อมใช้งานอยู่แล้ว และพร้อมเปิดใช้งานได้ทันที"
-      : undefined,
+    userLanguageInstruction(parts.prompt ?? "", parts.botInstructions),
     parts.historyRetrievalEnabled &&
     builtinOffered(parts.disabledBuiltinTools, "search_history") &&
     builtinOffered(parts.disabledBuiltinTools, "read_history")

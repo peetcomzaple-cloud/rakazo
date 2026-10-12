@@ -7,6 +7,11 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { LoginField } from "./bot-secrets.js";
 import { redactConnectorPayload } from "./connector-safety.js";
+import {
+  classifyNavigationError,
+  type DnsLookupFn,
+} from "./navigation-error.js";
+import { formatThaiDnsFailureMessage } from "./verified-urls.js";
 
 const MAX_BROWSER_ACTIONS = 24;
 
@@ -22,30 +27,95 @@ export type ResolveSecretFill = (
   step: SecretFillStep,
 ) => Promise<{ text: string; origin: string } | { error: string }>;
 
+export interface BrowserNavigateToolOptions {
+  findVerifiedUrls?: (spaceId: string, keyword?: string) => Promise<string[]>;
+  spaceId?: string;
+  dnsLookupFn?: DnsLookupFn;
+}
+
 export async function browserNavigateFromTool(
   browser: BrowserProvider,
   computer: ComputerRef,
   context: AdapterContext,
   args: Record<string, unknown>,
+  options: BrowserNavigateToolOptions = {},
 ) {
   const url = String(args.url ?? "").trim();
   try {
     const parsed = new URL(url);
     if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) {
       return {
+        ok: false,
+        url,
         error: "An HTTP(S) URL without embedded credentials is required",
-        fallback: "computer_act" as const,
+        errorCode: "INVALID_URL",
+        errorKind: "invalid_url",
+        retryable: false,
       };
     }
-    const result = await browser.navigate(computer, { url, signal: context.signal }, context);
-    return formatBrowserResult(result);
-  } catch (error) {
-    context.signal.throwIfAborted();
+  } catch {
     return {
-      error: error instanceof Error ? error.message : String(error),
-      fallback: "computer_act" as const,
+      ok: false,
+      url,
+      error: "An HTTP(S) URL without embedded credentials is required",
+      errorCode: "INVALID_URL",
+      errorKind: "invalid_url",
+      retryable: false,
     };
   }
+
+  let result: Awaited<ReturnType<BrowserProvider["navigate"]>>;
+  try {
+    result = await browser.navigate(computer, { url, signal: context.signal }, context);
+  } catch (error) {
+    context.signal.throwIfAborted();
+    result = {
+      url,
+      title: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (result.error) {
+    let suggestions: string[] = [];
+    if (options.findVerifiedUrls && options.spaceId) {
+      try {
+        suggestions = await options.findVerifiedUrls(options.spaceId);
+      } catch {
+        suggestions = [];
+      }
+    }
+    const classified = await classifyNavigationError(url, result.error, {
+      lookupFn: options.dnsLookupFn,
+      suggestions,
+    });
+
+    const isNxdomain = classified.errorKind === "nxdomain";
+    const thaiMsg = isNxdomain
+      ? formatThaiDnsFailureMessage({
+          hostname: classified.hostname,
+          suggestions: classified.suggestions,
+        })
+      : undefined;
+
+    const baseResult = {
+      ok: false,
+      url: classified.url,
+      hostname: classified.hostname,
+      title: "",
+      error: classified.error,
+      errorCode: classified.errorCode,
+      errorKind: classified.errorKind,
+      retryable: classified.retryable,
+      fallback: isNxdomain ? undefined : result.fallback,
+      suggestions: classified.suggestions,
+      dnsStatus: classified.dnsStatus,
+      note: thaiMsg || classified.recoveryGuidance,
+    };
+    return formatBrowserResult(baseResult);
+  }
+
+  return formatBrowserResult(result);
 }
 
 export async function browserSnapshotFromTool(

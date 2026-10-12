@@ -712,8 +712,11 @@ def run(argv: list[str]) -> int:
         finally:
             client.close()
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"ok": False, "error": str(exc), "fallback": "computer_act",
-                              "uncertain": command == "act"}))
+        is_dns_err = any(code in str(exc) for code in ("ERR_NAME_NOT_RESOLVED", "ERR_NAME_RESOLUTION_FAILED"))
+        payload: dict[str, Any] = {"ok": False, "error": str(exc), "uncertain": command == "act"}
+        if not (command == "navigate" and is_dns_err):
+            payload["fallback"] = "computer_act"
+        print(json.dumps(payload))
         return 0
 
 

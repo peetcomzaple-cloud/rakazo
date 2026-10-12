@@ -409,6 +409,32 @@ describe("browser tools", () => {
     });
   });
 
+  it("classifies navigation failure and suppresses fallback for NXDOMAIN with suggestions", async () => {
+    const browser = new FakeBrowserProvider();
+    browser.forceFallback = "net::ERR_NAME_NOT_RESOLVED";
+    const result = await browserNavigateFromTool(
+      browser,
+      computer,
+      context,
+      { url: "https://flick.mdcu.ac.th/" },
+      {
+        dnsLookupFn: async () => ({ code: "ENOTFOUND" }),
+        findVerifiedUrls: async () => ["https://flick.docchula.com/"],
+        spaceId: "space-1",
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "NXDOMAIN",
+      errorKind: "nxdomain",
+      retryable: false,
+      suggestions: ["https://flick.docchula.com/"],
+    });
+    expect("fallback" in result && result.fallback).toBeUndefined();
+    expect((result as { note?: string }).note).toContain("เปิด flick.mdcu.ac.th ไม่ได้");
+    expect((result as { note?: string }).note).toContain("https://flick.docchula.com/");
+  });
+
   it("hides page browser tools when the computer is not graphical", () => {
     const tools = [...PAGE_BROWSER_TOOL_NAMES].map((name) => ({ name }));
     expect(filterPageBrowserTools(tools, true)).toHaveLength(3);

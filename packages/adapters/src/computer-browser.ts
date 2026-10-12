@@ -77,11 +77,13 @@ export class ComputerBrowserProvider implements BrowserProvider {
     }
     const live = await this.runLive(computer, { command: "navigate", url: request.url }, context);
     if (live?.ok !== true || live.fallback === "computer_act") {
+      const err = live?.error || DETACHED_MESSAGE;
+      const isDnsErr = /ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ENOTFOUND/i.test(err);
       return {
         url: request.url,
         title: "",
-        fallback: "computer_act",
-        error: live?.error || DETACHED_MESSAGE,
+        fallback: isDnsErr ? undefined : "computer_act",
+        error: err,
       };
     }
     return {

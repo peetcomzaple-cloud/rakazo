@@ -27,6 +27,11 @@ export class BrowserRecovery {
 
   blockedResult(): Record<string, unknown> | undefined {
     if (this.failures < 2 && !this.uncertain) return undefined;
+    return this.unresolvedResult();
+  }
+
+  unresolvedResult(): Record<string, unknown> | undefined {
+    if (this.failures === 0 && !this.uncertain) return undefined;
     return {
       ok: false,
       completed: 0,

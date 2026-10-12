@@ -7060,11 +7060,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
           if (approvalPausePending || !leaseValid) return;
           approvedEffectReplays.assertDrained();
-          const blockedBrowser = browserRecovery.blockedResult();
+          const blockedBrowser = browserRecovery.unresolvedResult();
           if (blockedBrowser) {
             throw new Error(
               /[\u0E00-\u0E7F]/.test(taskPrompt)
-                ? `ยังทำงานไม่สำเร็จ: เครื่องมือคลิกหน้าเว็บล้มซ้ำ จึงหยุดการลองซ้ำ ต้องตรวจจอแล้วใช้เครื่องมือเดสก์ท็อปต่อ รายละเอียด: ${blockedBrowser.error}`
+                ? `ยังทำงานไม่สำเร็จ: เครื่องมือคลิกหน้าเว็บล้มและยังไม่ได้กู้คืน ต้องตรวจจอแล้วใช้เครื่องมือเดสก์ท็อปต่อ รายละเอียด: ${blockedBrowser.error}`
                 : String(blockedBrowser.error),
             );
           }

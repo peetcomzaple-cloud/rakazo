@@ -1,6 +1,7 @@
 import type { WebProvider } from "@rakazo/adapter-kit";
 import { FakeWebProvider } from "./fake-web.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
+import { SearxngWebProvider } from "./searxng-web-search.js";
 
 /**
  * Resolve the deployment web provider.
@@ -13,6 +14,7 @@ import { KeylessHttpWebProvider } from "./keyless-http-web.js";
 export function resolveWebProviderKind(source: NodeJS.ProcessEnv = process.env): string {
   const raw = source.WEB_PROVIDER?.trim().toLowerCase();
   if (!raw || raw === "keyless" || raw === "keyless-http") return "keyless-http";
+  if (raw === "searxng") return "searxng";
   if (raw === "fake") return "fake";
   return raw;
 }
@@ -28,6 +30,8 @@ export function createWebProvider(
     case "keyless":
     case "":
       return new KeylessHttpWebProvider(options);
+    case "searxng":
+      return new SearxngWebProvider(options);
     default:
       throw new Error(`Unknown web provider "${kind}"`);
   }

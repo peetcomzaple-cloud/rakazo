@@ -2,6 +2,7 @@ import type { BrowserProvider, SandboxProvider } from "@rakazo/adapter-kit";
 import { EmulatorBrowserProvider } from "./browser-emulator.js";
 import { ComputerBrowserProvider } from "./computer-browser.js";
 import { FakeBrowserProvider, type FakeBrowserProviderOptions } from "./fake-browser.js";
+import { SpikeBrowserProvider } from "./browser-provider-spike.js";
 
 export type CreateBrowserProviderOptions = FakeBrowserProviderOptions & {
   sandbox?: SandboxProvider;
@@ -21,6 +22,8 @@ export function resolveBrowserProviderKind(source: NodeJS.ProcessEnv = process.e
   if (!raw || raw === "computer" || raw === "sandbox") return "computer";
   if (raw === "fake") return "fake";
   if (raw === "emulator") return "emulator";
+  if (raw === "playwright" || raw === "playwright-cdp" || raw === "spike-playwright") return "playwright-cdp";
+  if (raw === "agent-browser" || raw === "spike-agent-browser") return "agent-browser";
   return raw;
 }
 
@@ -38,6 +41,13 @@ export function createBrowserProvider(
       return new FakeBrowserProvider(options);
     case "emulator":
       return new EmulatorBrowserProvider(options);
+    case "playwright":
+    case "playwright-cdp":
+    case "spike-playwright":
+      return new SpikeBrowserProvider({ kind: "playwright-cdp" });
+    case "agent-browser":
+    case "spike-agent-browser":
+      return new SpikeBrowserProvider({ kind: "agent-browser" });
     default:
       throw new Error(`Unknown browser provider "${resolved}"`);
   }

@@ -1203,7 +1203,7 @@ describe("computer provisioning", () => {
           updatedAt: expect.any(Date),
         },
         data: {
-          state: "error",
+          state: "stopped",
           providerRef: "new-provider-1",
           kind: "e2b",
         },
@@ -1510,18 +1510,21 @@ describe("Team Computer wake", () => {
 });
 
 describe("computer execution leases", () => {
-  it("does not serialize dedicated computers", async () => {
+  it("acquires execution lease and fences dedicated computers monotonically", async () => {
     const prisma = leasePrisma({ scope: "dedicated" });
 
-    await expect(
-      acquireComputerExecutionLease(prisma.client, {
-        computerId: "computer-1",
-        runId: "run-1",
-        botId: "bot-1",
-      }),
-    ).resolves.toBeNull();
-    expect(prisma.updateManyAndReturn).not.toHaveBeenCalled();
-    expect(prisma.create).not.toHaveBeenCalled();
+    const lease = await acquireComputerExecutionLease(prisma.client, {
+      computerId: "computer-1",
+      runId: "run-1",
+      botId: "bot-1",
+    });
+    expect(lease).toEqual({
+      computerId: "computer-1",
+      botId: "bot-1",
+      runId: "run-1",
+      fence: 1,
+    });
+    expect(prisma.create).toHaveBeenCalled();
   });
 
   it("fences one Team bot's screen and expires only the matching lease", async () => {

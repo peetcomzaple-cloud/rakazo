@@ -1,0 +1,78 @@
+{
+  "snapshotName": "rakazo-phase0-5-complete-snapshot",
+  "createdAt": "2026-10-15T15:25:00Z",
+  "author": "Antigravity D (Lead Architecture Implementer & Integrator)",
+  "target": "Jules Independent QA",
+  "repository": {
+    "remoteOrigin": "https://github.com/elie222/rakazo.git",
+    "branch": "main",
+    "pinnedCommit": "0c067de584ec6dcf5c84d7be15e34ff999ee4a46",
+    "pinnedCommitShort": "0c067de5",
+    "commitTitle": "test: add tests for /rakazo-computer stop/delete safety and scope /workspace explicitly",
+    "workingTreeStatus": "Synchronized working tree with new modular adapter files"
+  },
+  "runtime": {
+    "hostOs": "Linux x86_64 (Ubuntu 24.04 LTS / Kernel 6.8.0-1017-oracle)",
+    "nodeVersion": "v20.18.0 / v24.18.1",
+    "pnpmVersion": "9.15.0",
+    "vitestVersion": "4.1.11",
+    "pythonVersion": "3.10 / 3.12.10",
+    "pypdfVersion": "6.20.1"
+  },
+  "oracleStaging": {
+    "host": "100.90.43.108",
+    "sourceRoot": "/home/opc/rakazo/source",
+    "container": "rakazo-worker-1",
+    "containerBindMount": "/home/opc/rakazo/source/packages/adapters/src -> /app/packages/adapters/src",
+    "webUiUrl": "http://100.90.43.108:5173",
+    "protectedViewerUrl": "http://100.90.43.108:16080"
+  },
+  "synchronizedFiles": [
+    {
+      "path": "packages/adapters/src/browser-provider-spike.ts",
+      "sha256": "11D3D140B961BAE1CD24B153E9A5C59DE3AF771E39C1B7A0D2E9BD250F930E70"
+    },
+    {
+      "path": "packages/adapters/src/browser-provider-spike.test.ts",
+      "sha256": "2CF915F5E8789DE51C30954AD9A80AA2AA88152B766AFF6D34E6773A4D881EBA"
+    },
+    {
+      "path": "packages/adapters/src/browser-provider-factory.ts",
+      "sha256": "E9CFD39CD0879FE17C4D6FED8B39356354A34040A2787C84EDF040F605293376"
+    },
+    {
+      "path": "packages/adapters/src/structured-action-selector.ts",
+      "sha256": "20AD2A7214C994A849D0CC64AFA728A824BFB72F0AEA446AB778064C6E698B99"
+    },
+    {
+      "path": "packages/adapters/src/jev-adapter.ts",
+      "sha256": "5B3DABD8D6BD37285B4BCA1B0CF436D3E5B272693B438E45503E0A666B59C2CA"
+    },
+    {
+      "path": "packages/adapters/src/jev-selector.test.ts",
+      "sha256": "1DF90FAAC72F521FBA386DBC03DDC15DFFA852B23AA2AA905688C4886B1A2E8B"
+    },
+    {
+      "path": "packages/adapters/src/searxng-web-search.ts",
+      "sha256": "023974DB93C64F76F356E64660D2597E9A1F23572BB3DB0FA93CF956CE032CF1"
+    },
+    {
+      "path": "packages/adapters/src/searxng-web-search.test.ts",
+      "sha256": "FC4B92883D970A4EF5FB974B64DDB4EAA26677FE2C1EC37534DDEAD9F0442B4A"
+    },
+    {
+      "path": "packages/adapters/src/web-provider-factory.ts",
+      "sha256": "9DF3EB842B4002D9658AC59EA5B58FE7893126E33DC5E606D8006134C3332603"
+    },
+    {
+      "path": "packages/adapters/src/document-renderer.ts",
+      "sha256": "3BF8089C03E52EC6A1B0D8595604132AEE5FAE03D25F31DAD77FA2C6A7F02B90"
+    },
+    {
+      "path": "packages/adapters/src/round3-docs-renderer.test.ts",
+      "sha256": "E4A2F3116FD56D3632E883A87116B04DA0BF24ED6FFD73618E3CA896C829E6A3"
+    }
+  ],
+  "verificationCommand": "sudo docker exec -u root rakazo-worker-1 /app/node_modules/.bin/vitest run packages/adapters/src/browser-provider-spike.test.ts packages/adapters/src/jev-selector.test.ts packages/adapters/src/searxng-web-search.test.ts packages/adapters/src/round3-docs-renderer.test.ts",
+  "status": "READY_FOR_LIVE_QA"
+}

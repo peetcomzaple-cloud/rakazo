@@ -183,7 +183,240 @@ class PageBrowserTest(unittest.TestCase):
             res = helper.navigate(client, "session", "https://accounts.example.test/signin")
             self.assertTrue(res["ok"])
             self.assertEqual(res["httpStatus"], 200)
+            self.assertEqual(res["httpStatusStatus"], "known")
             self.assertEqual(res["title"], "Sign in - Google Accounts")
+
+    def test_navigate_never_fabricates_200_when_status_is_missing(self):
+        client = Mock()
+        client.call.side_effect = [
+            {"loaderId": "loader-1", "frameId": "frame-1"},
+            {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1"}}},
+        ]
+        with patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",
+                {"url": "https://example.test/app", "title": "App", "httpStatus": None},
+            ]
+            res = helper.navigate(client, "session", "https://example.test/app")
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["httpStatusStatus"], "unknown")
+            self.assertNotIn("httpStatus", res)
+
+    def test_navigate_detects_200_challenge_page_and_ignores_subresource_403(self):
+        client = helper.CdpClient("ws://127.0.0.1:9222/test")
+        client._handle_event(
+            {
+                "sessionId": "session-1",
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "req-sub-1",
+                    "loaderId": "loader-1",
+                    "frameId": "frame-1",
+                    "type": "XHR",
+                    "response": {"url": "https://example.test/api/sub", "status": 403, "headers": {}},
+                },
+            }
+        )
+        client._handle_event(
+            {
+                "sessionId": "session-1",
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "req-doc-1",
+                    "loaderId": "loader-1",
+                    "frameId": "frame-1",
+                    "type": "Document",
+                    "response": {"url": "https://example.test/home", "status": 200, "headers": {}},
+                },
+            }
+        )
+        with patch.object(
+            client,
+            "call",
+            side_effect=[
+                {"loaderId": "loader-1", "frameId": "frame-1"},
+                {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1"}}},
+            ],
+        ), patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",
+                {"url": "https://example.test/home", "title": "Home", "httpStatus": None},
+            ]
+            ok_res = helper.navigate(client, "session-1", "https://example.test/home")
+            self.assertTrue(ok_res["ok"])
+            self.assertEqual(ok_res["httpStatus"], 200)
+
+        with patch.object(
+            client,
+            "call",
+            side_effect=[
+                {"loaderId": "loader-1", "frameId": "frame-1"},
+                {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1"}}},
+            ],
+        ), patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",
+                {
+                    "url": "https://example.test/home",
+                    "title": "Just a moment...",
+                    "bodySnippet": "Verify you are human",
+                    "hasChallengeDom": True,
+                    "httpStatus": 200,
+                },
+            ]
+            chal_res = helper.navigate(client, "session-1", "https://example.test/home")
+            self.assertFalse(chal_res["ok"])
+            self.assertEqual(chal_res["httpStatus"], 200)
+            self.assertTrue(chal_res["challengeDetected"])
+
+    def test_navigate_captures_429_retry_after_and_redirect_chain(self):
+        client = helper.CdpClient("ws://127.0.0.1:9222/test")
+        client._handle_event(
+            {
+                "sessionId": "session-1",
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-1",
+                    "loaderId": "loader-2",
+                    "frameId": "frame-1",
+                    "type": "Document",
+                    "request": {"url": "https://example.test/start"},
+                },
+            }
+        )
+        client._handle_event(
+            {
+                "sessionId": "session-1",
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-1",
+                    "loaderId": "loader-2",
+                    "frameId": "frame-1",
+                    "type": "Document",
+                    "request": {"url": "https://example.test/rate-limited"},
+                    "redirectResponse": {"url": "https://example.test/start", "status": 302},
+                },
+            }
+        )
+        client._handle_event(
+            {
+                "sessionId": "session-1",
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "req-1",
+                    "loaderId": "loader-2",
+                    "frameId": "frame-1",
+                    "type": "Document",
+                    "response": {
+                        "url": "https://example.test/rate-limited",
+                        "status": 429,
+                        "headers": {"Retry-After": "7"},
+                    },
+                },
+            }
+        )
+        with patch.object(
+            client,
+            "call",
+            side_effect=[
+                {"loaderId": "loader-2", "frameId": "frame-1"},
+                {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-2"}}},
+            ],
+        ), patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",
+                {"url": "https://example.test/rate-limited", "title": "Too Many Requests"},
+            ]
+            res = helper.navigate(client, "session-1", "https://example.test/start")
+            self.assertFalse(res["ok"])
+            self.assertEqual(res["httpStatus"], 429)
+            self.assertEqual(res["retryAfterMs"], 7000)
+            self.assertTrue(res["redirected"])
+            self.assertEqual(
+                res["redirectChain"], [{"url": "https://example.test/start", "status": 302}]
+            )
+
+    def test_clear_origin_storage_scopes_cookies_and_storage_to_target_origin(self):
+        calls = []
+
+        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
+            calls.append((method, params, session_id))
+            if method == "Network.getCookies":
+                return {
+                    "cookies": [
+                        {"name": "host_sid", "domain": "app.example.test", "path": "/"},
+                        {"name": "parent_sso", "domain": ".example.test", "path": "/"},
+                        {"name": "other_sid", "domain": "other.test", "path": "/"},
+                    ]
+                }
+            if method == "Page.getFrameTree":
+                return {
+                    "frameTree": {
+                        "frame": {
+                            "id": "frame-1",
+                            "securityOrigin": "https://app.example.test",
+                            "url": "https://app.example.test/login",
+                        }
+                    }
+                }
+            return {}
+
+        client = Mock()
+        client.call.side_effect = fake_call
+
+        res = helper.clear_origin_storage(
+            client,
+            "session-1",
+            {
+                "origin": "https://app.example.test",
+                "includeSessionStorage": False,
+                "includeSubdomainSharedCookies": False,
+            },
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["origin"], "https://app.example.test")
+        self.assertEqual(res["deletedCookies"], 1)
+        self.assertFalse(res["clearedSessionStorage"])
+        methods = [m for m, _, _ in calls]
+        self.assertIn("Storage.clearDataForOrigin", methods)
+        self.assertNotIn("Network.clearBrowserCookies", methods)
+        self.assertNotIn("DOMStorage.clear", methods)
+        deleted = [p for m, p, _ in calls if m == "Network.deleteCookies"]
+        self.assertEqual(len(deleted), 1)
+        self.assertEqual(deleted[0]["name"], "host_sid")
+
+        calls.clear()
+        res_with_session_and_shared = helper.clear_origin_storage(
+            client,
+            "session-1",
+            {
+                "origin": "https://app.example.test",
+                "storageKey": "https://app.example.test/",
+                "includeSessionStorage": True,
+                "includeSubdomainSharedCookies": True,
+            },
+        )
+        self.assertEqual(res_with_session_and_shared["deletedCookies"], 2)
+        self.assertTrue(res_with_session_and_shared["clearedSessionStorage"])
+        methods_2 = [m for m, _, _ in calls]
+        self.assertIn("Storage.clearDataForStorageKey", methods_2)
+        self.assertIn("DOMStorage.clear", methods_2)
+
+        with self.assertRaisesRegex(ValueError, "storageType"):
+            helper.clear_origin_storage(
+                client,
+                "session-1",
+                {"origin": "https://app.example.test", "storageTypes": ["session_storage"]},
+            )
+        with self.assertRaisesRegex(ValueError, "storageKey"):
+            helper.clear_origin_storage(
+                client,
+                "session-1",
+                {
+                    "origin": "https://app.example.test",
+                    "storageKey": "https://evil.example.test/",
+                },
+            )
 
 
 if __name__ == "__main__":

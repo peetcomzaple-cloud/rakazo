@@ -404,11 +404,14 @@ export class SpikeBrowserProvider implements BrowserProvider {
 
   private getValue(win: any, el: Element): string | undefined {
     if (el instanceof win.HTMLInputElement) {
-      if (el.type === "checkbox" || el.type === "radio") return el.checked ? "checked" : "unchecked";
-      return el.value;
+      const inputEl = el as HTMLInputElement;
+      if (inputEl.type === "checkbox" || inputEl.type === "radio") {
+        return inputEl.checked ? "checked" : "unchecked";
+      }
+      return inputEl.value;
     }
     if (el instanceof win.HTMLSelectElement || el instanceof win.HTMLTextAreaElement) {
-      return el.value;
+      return (el as HTMLSelectElement | HTMLTextAreaElement).value;
     }
     return undefined;
   }

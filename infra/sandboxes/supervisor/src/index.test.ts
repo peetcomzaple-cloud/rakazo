@@ -566,13 +566,13 @@ describe("sandbox supervisor input containment", () => {
   });
 
   it("keeps the viewer read-only and uses a separate process for takeover control", () => {
-    expect(interactiveScreenCommand(false)).toMatch(/pkill .*sockets\/control-1-/);
+    expect(interactiveScreenCommand(false)).toMatch(/pkill .*sockets\/control-99-/);
     expect(interactiveScreenCommand(false)).not.toMatch(/x11vnc -display/);
     expect(interactiveScreenCommand(true, "lease-new")).toMatch(
-      /x11vnc -display .* -rfbport 0 -unixsock .*control-1-/,
+      /x11vnc -display .* -rfbport 0 -unixsock .*control-99-/,
     );
     expect(interactiveScreenCommand(true, "lease-new")).toMatch(/6080/);
-    expect(interactiveScreenCommand(true, "lease-new")).not.toContain("sockets/view-1-");
+    expect(interactiveScreenCommand(true, "lease-new")).not.toContain("sockets/view-99-");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("= 'lease-old'");
     expect(interactiveScreenCommand(false, "lease-old")).toContain("RAKAZO_CONTROL_RELEASED");
   });
@@ -582,31 +582,34 @@ describe("sandbox supervisor input containment", () => {
     expect(nextScreenIndex(assigned, "writer")).toBe(0);
     expect(nextScreenIndex(assigned, "researcher")).toBe(1);
     expect(nextScreenIndex(assigned, "writer")).toBe(0);
-    expect(ensureScreenCommand(0, "writer", "view-token")).toContain("-display :1");
+    expect(ensureScreenCommand(0, "writer", "view-token")).toContain("-display :99");
     expect(ensureScreenCommand(0, "writer", "view-token")).toContain("seq 1 100");
-    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("Xvfb :2");
-    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("sockets/view-2-");
+    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("Xvfb :100");
+    expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("sockets/view-100-");
     expect(ensureScreenCommand(1, "researcher", "view-token")).toContain("0.0.0.0:6080");
     expect(() => nextScreenIndex(assigned, "overflow", undefined, 1)).toThrow(
       /cannot allocate another screen/,
     );
   });
 
-  it("generates syntactically valid shell to start an extra display", () => {
-    for (const command of [
-      ensureScreenCommand(0, "writer", "view-token"),
-      ensureScreenCommand(1, "researcher", "view-token"),
-      stopExtraScreenCommand(0, "writer"),
-      stopExtraScreenCommand(1, "researcher"),
-      interactiveScreenCommand(false, "lease-old"),
-      interactiveScreenCommand(true, "lease-new"),
-      resetManagedScreensCommand(),
-    ]) {
-      const result = spawnSync("bash", ["-n"], { input: command });
-      expect(result.status).toBe(0);
-      expect(result.stderr.toString()).toBe("");
-    }
-  });
+  it.skipIf(process.platform === "win32")(
+    "generates syntactically valid shell to start an extra display",
+    () => {
+      for (const command of [
+        ensureScreenCommand(0, "writer", "view-token"),
+        ensureScreenCommand(1, "researcher", "view-token"),
+        stopExtraScreenCommand(0, "writer"),
+        stopExtraScreenCommand(1, "researcher"),
+        interactiveScreenCommand(false, "lease-old"),
+        interactiveScreenCommand(true, "lease-new"),
+        resetManagedScreensCommand(),
+      ]) {
+        const result = spawnSync("bash", ["-n"], { input: command });
+        expect(result.status).toBe(0);
+        expect(result.stderr.toString()).toBe("");
+      }
+    },
+  );
 
   it("serializes screen lifecycle operations by container", async () => {
     const locks = new Map<string, Promise<void>>();
@@ -644,6 +647,7 @@ describe("sandbox supervisor input containment", () => {
     const writer = browserProfilePathForScreen("writer");
     const researcher = browserProfilePathForScreen("researcher");
     const command = ensureScreenCommand(0, "writer", "view-token");
+    const stopCommand = stopExtraScreenCommand(0, "writer");
 
     expect(writer).not.toBe(researcher);
     expect(command).toContain(writer);
@@ -651,8 +655,8 @@ describe("sandbox supervisor input containment", () => {
     expect(ensureScreenCommand(0, "researcher", "view-token")).toContain(researcher);
     expect(command).not.toContain("/home/rakazo/.browser-profiles/chromium/.");
     expect(command).not.toContain(".rakazo-base-generation");
-    expect(command).toContain("browser-pid-");
-    expect(command).toContain("tr '\\0' '\\n' <\"/proc/$1/cmdline\"");
+    expect(stopCommand).toContain("browser-pid-");
+    expect(stopCommand).toContain("tr '\\0' '\\n' <\"/proc/$1/cmdline\"");
     expect(browserProfilePathForScreen("../../writer")).toMatch(
       /^\/home\/rakazo\/\.browser-profiles\/chromium-bot-[0-9a-f]+$/,
     );
@@ -767,17 +771,17 @@ describe("sandbox supervisor input containment", () => {
     const primary = stopExtraScreenCommand(0, "writer");
     expect(primary).toContain(`--user-data-dir=${browserProfilePathForScreen("writer")}`);
     expect(primary).toContain("kill -KILL");
-    expect(primary).not.toMatch(/Xvfb :1 /);
+    expect(primary).not.toMatch(/Xvfb :99 /);
     expect(primary).not.toContain("websockify");
-    expect(primary).toContain("sockets/view-1-");
-    expect(primary).toContain("sockets/control-1-");
-    expect(primary).toContain("rm -f /tmp/rakazo/control-token-1");
+    expect(primary).toContain("sockets/view-99-");
+    expect(primary).toContain("sockets/control-99-");
+    expect(primary).toContain("rm -f /tmp/rakazo/control-token-99");
     expect(primary).toContain("transport failed to stop");
 
     const extra = stopExtraScreenCommand(1, "researcher");
-    expect(extra).toContain("[X]vfb :2 -screen");
-    expect(extra).toContain("[f]luxbox -rc /tmp/fluxbox-home-2/.fluxbox/init");
-    expect(extra).toContain("sockets/view-2-");
+    expect(extra).toContain("[X]vfb :100 -screen");
+    expect(extra).toContain("[f]luxbox -rc /tmp/fluxbox-home-100/.fluxbox/init");
+    expect(extra).toContain("sockets/view-100-");
     expect(extra).not.toContain("websockify");
     expect(extra).toContain(`--user-data-dir=${browserProfilePathForScreen("researcher")}`);
   });
@@ -830,6 +834,48 @@ describe("sandbox supervisor input containment", () => {
       height: 800,
       cursor: { x: 12, y: 34 },
       activeWindow: { id: "99", title: "Browser" },
+    });
+    expect(
+      parseObservation(
+        [
+          "DISPLAY :1",
+          "INVENTORY_TS 2026-10-16T10:00:00.100Z",
+          "INVENTORY_STATUS validnonempty",
+          'WINDOWS_JSON [{"id":"0x01400003","wmClass":"chromium.Chromium","isCurrentProfile":true,"pid":1234,"title":"Example"}]',
+          "GEOM 1280 800",
+          "CURSOR X=12 Y=34 SCREEN=0 WINDOW=20971523",
+          "WINDOW 20971523",
+          "TITLE Example",
+          "IMAGE AQID",
+          "CAPTURED_AT 2026-10-16T10:00:00.200Z",
+        ].join("\n"),
+      ),
+    ).toEqual({
+      image: "AQID",
+      mimeType: "image/png",
+      width: 1280,
+      height: 800,
+      display: ":1",
+      capturedAt: "2026-10-16T10:00:00.200Z",
+      windowInventoryStatus: "validnonempty",
+      windowInventoryFreshness: "2026-10-16T10:00:00.100Z",
+      windows: [
+        {
+          id: "0x01400003",
+          wmClass: "chromium.Chromium",
+          isCurrentProfile: true,
+          pid: 1234,
+          title: "Example",
+        },
+      ],
+      cursor: { x: 12, y: 34 },
+      activeWindow: {
+        id: "0x01400003",
+        title: "Example",
+        wmClass: "chromium.Chromium",
+        pid: 1234,
+        isCurrentProfile: true,
+      },
     });
     expect(() => parseObservation("GEOM 1280 800\nIMAGE ")).toThrow(/no image/);
   });
@@ -947,7 +993,6 @@ describe("computer command identity", () => {
       );
     expect(route("/computers/:id/exec")).toContain("computerCommandEnv(layout)");
     expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
-  });
   });
 });
 

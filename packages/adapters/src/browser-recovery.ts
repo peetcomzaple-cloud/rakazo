@@ -6,6 +6,9 @@ export interface NavigationFailureRecord {
   errorKind: string;
   retryable: boolean;
   httpStatus?: number;
+  httpStatusStatus?: "known" | "unknown";
+  retryAfterMs?: number;
+  redirected?: boolean;
   suggestions?: string[];
   note?: string;
   attempts: number;
@@ -19,6 +22,7 @@ export class BrowserRecovery {
   private uncertain = false;
   private lastError = "";
   private navigationFailure?: NavigationFailureRecord;
+  private originStorageClearedForCurrentFailure = false;
   private challengeDetected = false;
   private challengeType?: string;
   private cdpDisconnected = false;
@@ -48,12 +52,23 @@ export class BrowserRecovery {
       name !== "browser_act" &&
       name !== "computer_act" &&
       name !== "browser_navigate" &&
-      name !== "browser_snapshot"
+      name !== "browser_snapshot" &&
+      name !== "browser_clear_origin_storage"
     ) {
       return;
     }
     if (!result || typeof result !== "object") return;
     const value = result as Record<string, unknown>;
+
+    if (name === "browser_clear_origin_storage") {
+      if (!value.error && value.ok !== false) {
+        this.originStorageClearedForCurrentFailure = true;
+        if (this.navigationFailure?.errorKind === "flow_state_invalid") {
+          this.navigationFailure = undefined;
+        }
+      }
+      return;
+    }
 
     // Handle browser_snapshot: record fresh snapshot taken
     if (name === "browser_snapshot") {
@@ -84,8 +99,50 @@ export class BrowserRecovery {
 
     // Handle browser_navigate
     if (name === "browser_navigate") {
-      if (value.error || value.ok === false) {
-        const err = String(value.error || "Navigation failed");
+      const httpStatus =
+        typeof value.httpStatus === "number"
+          ? value.httpStatus
+          : typeof value.status_code === "number"
+            ? value.status_code
+            : undefined;
+      const httpStatusStatus: "known" | "unknown" =
+        value.httpStatusStatus === "known" || value.httpStatusStatus === "unknown"
+          ? value.httpStatusStatus
+          : httpStatus !== undefined
+            ? "known"
+            : "unknown";
+      const retryAfterMs =
+        typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs)
+          ? value.retryAfterMs
+          : undefined;
+      const redirected = typeof value.redirected === "boolean" ? value.redirected : undefined;
+
+      const isChallengeSignal =
+        value.challengeDetected === true ||
+        (typeof value.title === "string" &&
+          /(?:captcha|challenge|turnstile|hcaptcha|just a moment)/i.test(value.title)) ||
+        (typeof value.error === "string" &&
+          /(?:captcha|challenge|turnstile|hcaptcha|just a moment)/i.test(value.error));
+
+      if (isChallengeSignal) {
+        this.challengeDetected = true;
+        this.challengeType =
+          typeof value.challengeType === "string"
+            ? value.challengeType
+            : typeof value.title === "string" && /turnstile/i.test(value.title)
+              ? "turnstile"
+              : typeof value.title === "string" && /hcaptcha/i.test(value.title)
+                ? "hcaptcha"
+                : "captcha";
+      } else if (value.challengeDetected === false) {
+        this.challengeDetected = false;
+        this.challengeType = undefined;
+      }
+
+      if (value.error || value.ok === false || (httpStatus !== undefined && httpStatus >= 400)) {
+        const err = String(
+          value.error || (httpStatus !== undefined ? `HTTP ${httpStatus}` : "Navigation failed"),
+        );
         const url = String(value.url ?? "");
         let hostname = String(value.hostname ?? "");
         if (!hostname && url) {
@@ -95,12 +152,6 @@ export class BrowserRecovery {
             hostname = url.replace(/^[a-zA-Z]+:\/\//, "").split("/")[0]?.split(":")[0] ?? "";
           }
         }
-        const httpStatus =
-          typeof value.httpStatus === "number"
-            ? value.httpStatus
-            : typeof value.status_code === "number"
-              ? value.status_code
-              : undefined;
 
         const isNxdomain =
           value.errorCode === "NXDOMAIN" ||
@@ -122,17 +173,11 @@ export class BrowserRecovery {
           err.includes("CDP disconnected") ||
           err.includes("No target");
 
-        const isChallenge =
-          value.challengeDetected === true ||
-          /(?:captcha|challenge|turnstile|hcaptcha|just a moment)/i.test(err);
-
         const isFlowStateInvalid =
-          httpStatus === 400 ||
-          err.includes("Error 400") ||
-          err.includes("400 Bad Request") ||
-          (/(?:signin|login|auth|oauth|challenge|callback|flowEntry)/i.test(url) &&
-            httpStatus !== undefined &&
-            httpStatus >= 400);
+          !isChallengeSignal &&
+          (httpStatus === 400 ||
+            err.includes("Error 400") ||
+            err.includes("400 Bad Request"));
 
         let errorCode = String(value.errorCode ?? "BROWSER_ERROR");
         let errorKind = String(value.errorKind ?? "unknown");
@@ -155,32 +200,36 @@ export class BrowserRecovery {
           errorKind = "cdp_disconnected";
           retryable = true;
           this.cdpDisconnected = true;
-        } else if (isChallenge) {
+        } else if (isChallengeSignal) {
           errorCode = "CHALLENGE_DETECTED";
           errorKind = "challenge";
           retryable = false;
-          this.challengeDetected = true;
-          this.challengeType =
-            typeof value.challengeType === "string" ? value.challengeType : "captcha";
         } else if (isFlowStateInvalid) {
           errorCode = "FLOW_STATE_INVALID";
           errorKind = "flow_state_invalid";
           retryable = true;
           suggestions = suggestions || [
-            "Return to service entry point (base login URL) before attempting any storage resets",
+            "Return to service entry point (base login URL) before attempting any storage resets; if still failing, call browser_clear_origin_storage on that origin",
           ];
           note =
             note ||
-            "หน้าล็อกอินภายในคืนค่า HTTP 400 Bad Request เนื่องจากขาด flow state ให้กลับไปยัง entry point เริ่มต้นของบริการ";
+            "หน้าล็อกอินภายในคืนค่า HTTP 400 Bad Request เนื่องจากขาด flow state ให้กลับไปยัง entry point เริ่มต้นของบริการ หากยังติดสถานะเดิมจึงใช้ browser_clear_origin_storage สำหรับ origin นั้น";
+        } else if (httpStatus === 401 || httpStatus === 403) {
+          errorCode = `HTTP_${httpStatus}`;
+          errorKind = "auth_or_forbidden";
+          retryable = false;
+        } else if (httpStatus === 429) {
+          errorCode = "HTTP_429";
+          errorKind = "rate_limited";
+          retryable = true;
+        } else if (httpStatus !== undefined && httpStatus >= 500) {
+          errorCode = `HTTP_${httpStatus}`;
+          errorKind = "server_error";
+          retryable = true;
         } else if (httpStatus !== undefined && httpStatus >= 400) {
           errorCode = `HTTP_${httpStatus}`;
-          errorKind =
-            httpStatus === 429
-              ? "rate_limited"
-              : httpStatus >= 500
-                ? "server_error"
-                : "http_error";
-          retryable = httpStatus === 429 || httpStatus >= 500;
+          errorKind = "http_error";
+          retryable = false;
         }
 
         this.navigationFailure = {
@@ -191,6 +240,9 @@ export class BrowserRecovery {
           errorKind,
           retryable,
           httpStatus,
+          httpStatusStatus,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+          ...(redirected !== undefined ? { redirected } : {}),
           suggestions,
           note,
           attempts: (this.navigationFailure?.attempts ?? 0) + 1,
@@ -198,6 +250,7 @@ export class BrowserRecovery {
       } else {
         // Successful navigation clears any navigation failure
         this.navigationFailure = undefined;
+        this.originStorageClearedForCurrentFailure = false;
         this.cdpDisconnected = false;
       }
       return;
@@ -407,7 +460,21 @@ export class BrowserRecovery {
       return this.unresolvedResult();
     }
 
-    // 3. Check if computer_act fallback is blocked (NXDOMAIN cannot be solved by desktop Chrome)
+    // 3. Check if browser_clear_origin_storage is blocked (only one scoped clear per failure cycle)
+    if (toolName === "browser_clear_origin_storage") {
+      if (this.originStorageClearedForCurrentFailure) {
+        return {
+          ok: false,
+          retryable: false,
+          error:
+            "Origin storage was already cleared once in this recovery cycle. Do not repeatedly clear storage; navigate to the service entry point or request_takeover if still blocked.",
+          errorCode: "STORAGE_CLEAR_ALREADY_ATTEMPTED",
+        };
+      }
+      return undefined;
+    }
+
+    // 4. Check if computer_act fallback is blocked (NXDOMAIN cannot be solved by desktop Chrome)
     if (toolName === "computer_act") {
       if (this.navigationFailure?.errorKind === "nxdomain") {
         const argsStr = JSON.stringify(args ?? "");
@@ -447,6 +514,15 @@ export class BrowserRecovery {
         uncertain: false,
         challengeDetected: true,
         challengeType: this.challengeType,
+        errorCode: "CHALLENGE_DETECTED",
+        errorKind: "challenge",
+        retryable: false,
+        ...(this.navigationFailure?.httpStatus !== undefined
+          ? { httpStatus: this.navigationFailure.httpStatus }
+          : {}),
+        ...(this.navigationFailure?.httpStatusStatus !== undefined
+          ? { httpStatusStatus: this.navigationFailure.httpStatusStatus }
+          : {}),
         error: `Security challenge (${this.challengeType || "CAPTCHA"}) detected on page.`,
         fallback: "request_takeover",
         note: "ตรวจพบแบบทดสอบความปลอดภัย (CAPTCHA) ต้องให้ผู้ใช้ช่วยดำเนินการบนหน้าจอ",
@@ -477,6 +553,10 @@ export class BrowserRecovery {
         errorKind: this.navigationFailure.errorKind,
         hostname: this.navigationFailure.hostname,
         httpStatus: this.navigationFailure.httpStatus,
+        httpStatusStatus: this.navigationFailure.httpStatusStatus,
+        ...(this.navigationFailure.retryAfterMs !== undefined
+          ? { retryAfterMs: this.navigationFailure.retryAfterMs }
+          : {}),
         suggestions: this.navigationFailure.suggestions,
         retryable: this.navigationFailure.retryable,
         fallback: isNxdomain ? undefined : "computer_act",

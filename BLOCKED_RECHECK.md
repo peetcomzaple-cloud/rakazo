@@ -4,8 +4,8 @@
 This document records the baseline re-check iteration. This closes the re-check task, not overall Rakazo acceptance.
 
 ## 1. Environment & Baseline Identity
-- **Baseline Git SHA:** `58c3c8c5a1fba747ea438086ad2ffac382c87918`
-- **QA HEAD SHA:** `89b487dab334b8c048262951f317110da3738e05`
+- **Baseline Git SHA:** `67f37b16dc3c00584ac28bbdb1871e658e9516ff`
+- **QA HEAD SHA:** `055c948`
 - **Working Tree:** Clean checkout (all generated markdown and json findings are tracked).
 - **Environment:**
   - `node`: `v22.22.3`
@@ -37,9 +37,9 @@ The executor relies on methods imported from the browser layer that appear to be
 - **Distinction:** This Markdown list of missing exports is **not an executable regression test**. Runnable production-import tests were not implemented because the baseline compilation itself halts on missing exports.
 
 ## 4. Mock Grader vs. Production Harness
-- The `case-results.json` entries derived from the mock `jules_qa_cases.py` are explicitly re-classified with `"role": "JULES-QA-MOCK-HARNESS"`.
+- The `case-results.json` entries derived from the mock testing python setups are explicitly classified with `"role": "JULES-QA-MOCK-HARNESS"`.
 - They are synthetic harness self-tests and **not** production correctness indicators.
-- We withdraw any statement that the bounds are "robust" or have "Zero False Positives" across the entire system.
+- We withdraw any statement that the bounds are "robust" or have "Zero False Positives" across the entire system as a result of these synthetic tests.
 
 ## 5. UI Acceptance & Live Soak Verification Plan
 - Unchanged frontend files **do not remove** the original UI acceptance requirement. The Live UI and the 120-minute active soak remain unverified.
@@ -49,10 +49,3 @@ The executor relies on methods imported from the browser layer that appear to be
   - *Offline/Local:* Can test local providers, unit tests, mock bounds, and basic adapter configurations.
   - *Requires Real Credentials/Paid Calls:* The full UI soak, SearXNG real queries, actual agent planning through DeepSeek/Qwen. We did not incur paid usage for this re-check.
 - **Action:** `BLOCKED` for actual execution.
-
-## Next Steps for Antigravity (Fix Requests)
-Once Antigravity supplies a new implementation SHA, the following must be rerun:
-1. **Fix `index.test.ts` syntax error:** Resolve the mismatched `});` around line 950.
-2. **Fix `sandbox-supervisor` types:** Resolve the `never` type inferences on container removal operations and enforce strict string handling for `c.req.header()`.
-3. **Fulfill adapter contracts:** Implement the missing exports (`isBrowserNoOp`, `isBrowserPreDispatchFailure`, `isBrowserUncertain`, `ToolCallStreakWithOutput`, `messageToAgentHistoryText`) so the executor can compile.
-4. **Resubmit for UI Acceptance:** Provide a unified UI build/endpoint capability for the 120-minute live soak execution.

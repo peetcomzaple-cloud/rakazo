@@ -16,6 +16,8 @@ import type {
   BrowserActRequest,
   BrowserActResult,
   BrowserCapabilities,
+  BrowserClearOriginStorageRequest,
+  BrowserClearOriginStorageResult,
   BrowserNavigateRequest,
   BrowserNavigateResult,
   BrowserSnapshotRequest,
@@ -465,6 +467,11 @@ export interface BrowserProvider {
     request: BrowserActRequest,
     context: AdapterContext,
   ): Promise<BrowserActResult>;
+  clearOriginStorage?(
+    computer: ComputerRef,
+    request: BrowserClearOriginStorageRequest,
+    context: AdapterContext,
+  ): Promise<BrowserClearOriginStorageResult>;
 }
 
 /**

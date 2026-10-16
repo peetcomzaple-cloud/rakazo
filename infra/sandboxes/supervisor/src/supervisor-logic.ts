@@ -13,6 +13,7 @@ export {
   interactiveScreenCommand,
   prepareBrowserProfileCommand,
   quiesceBrowserProfilesCommand,
+  shellQuote,
   stopBrowserCommand,
   stopExtraScreenCommand,
   terminalCommand,
@@ -424,24 +425,89 @@ export function sandboxCommandTimedOut(exitCode: number, completedWithExit124: b
   return exitCode === 124 && !completedWithExit124;
 }
 
+export function normalizeObservationWindowId(rawId: string | undefined): string {
+  const value = (rawId ?? "").trim();
+  if (!value) return "";
+  if (/^0x[0-9a-f]+$/i.test(value)) {
+    const num = Number.parseInt(value.slice(2), 16);
+    return Number.isSafeInteger(num) && num > 0 ? `0x${num.toString(16).padStart(8, "0")}` : value;
+  }
+  if (/^\d+$/.test(value)) {
+    const num = Number.parseInt(value, 10);
+    return Number.isSafeInteger(num) && num > 0 ? `0x${num.toString(16).padStart(8, "0")}` : value;
+  }
+  return value;
+}
+
 export function parseObservation(output: string) {
   const geometry = output.match(/^GEOM\s+(\d+)\s+(\d+)$/m);
   const cursorLine = output.match(/^CURSOR\s+(.+)$/m)?.[1] ?? "";
   const cursorX = Number(cursorLine.match(/X=(\d+)/)?.[1]);
   const cursorY = Number(cursorLine.match(/Y=(\d+)/)?.[1]);
-  const windowId = output.match(/^WINDOW\s*(.*)$/m)?.[1]?.trim();
-  const title = output.match(/^TITLE\s*(.*)$/m)?.[1]?.trim();
+  const windowId = output.match(/^WINDOW(?:[ \t]+(.*))?$/m)?.[1]?.trim();
+  const title = output.match(/^TITLE(?:[ \t]+(.*))?$/m)?.[1]?.trim();
+  const display = output.match(/^DISPLAY\s+(\S+)$/m)?.[1]?.trim();
+  const capturedAt = output.match(/^CAPTURED_AT\s+(\S+)$/m)?.[1]?.trim();
+  const inventoryStatusRaw = output.match(/^INVENTORY_STATUS\s+(\S+)$/m)?.[1]?.trim();
+  const windowInventoryStatus =
+    inventoryStatusRaw === "unknown" ||
+    inventoryStatusRaw === "validempty" ||
+    inventoryStatusRaw === "validnonempty"
+      ? inventoryStatusRaw
+      : undefined;
+  const windowInventoryFreshness = output.match(/^INVENTORY_TS\s+(\S+)$/m)?.[1]?.trim();
+  const windowsJsonLine = output.match(/^WINDOWS_JSON\s+(.+)$/m)?.[1]?.trim();
+  let windows:
+    | Array<{
+        id: string;
+        title?: string;
+        wmClass?: string;
+        pid?: number;
+        isCurrentProfile?: boolean;
+      }>
+    | undefined;
+  if (windowsJsonLine) {
+    try {
+      const parsed = JSON.parse(windowsJsonLine);
+      if (Array.isArray(parsed)) {
+        windows = parsed;
+      }
+    } catch {
+      // ignore malformed optional windows JSON
+    }
+  }
   const image = output.match(/^IMAGE\s+([A-Za-z0-9+/=]+)$/m)?.[1];
   if (!image) throw new Error("screen capture returned no image");
+  const normalizedActiveId = windows && windowId ? normalizeObservationWindowId(windowId) : windowId;
+  const matchedActive =
+    windows && normalizedActiveId
+      ? windows.find((w) => w.id === normalizedActiveId)
+      : undefined;
+  const activeWindow = windowId
+    ? {
+        id: matchedActive?.id ?? normalizedActiveId ?? windowId,
+        ...((title || matchedActive?.title) ? { title: title || matchedActive?.title } : {}),
+        ...(matchedActive?.wmClass ? { wmClass: matchedActive.wmClass } : {}),
+        ...(matchedActive?.pid !== undefined ? { pid: matchedActive.pid } : {}),
+        ...(matchedActive?.isCurrentProfile !== undefined
+          ? { isCurrentProfile: matchedActive.isCurrentProfile }
+          : {}),
+      }
+    : undefined;
   return {
     image,
     mimeType: "image/png" as const,
     width: Number(geometry?.[1] ?? 1280),
     height: Number(geometry?.[2] ?? 800),
+    ...(display ? { display } : {}),
+    ...(capturedAt ? { capturedAt } : {}),
+    ...(windowInventoryStatus ? { windowInventoryStatus } : {}),
+    ...(windowInventoryFreshness ? { windowInventoryFreshness } : {}),
+    ...(windows !== undefined ? { windows } : {}),
     ...(Number.isFinite(cursorX) && Number.isFinite(cursorY)
       ? { cursor: { x: cursorX, y: cursorY } }
       : {}),
-    ...(windowId ? { activeWindow: { id: windowId, ...(title ? { title } : {}) } } : {}),
+    ...(activeWindow ? { activeWindow } : {}),
   };
 }
 

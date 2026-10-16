@@ -141,7 +141,7 @@ describe("autonomous action approval & loop guard", () => {
 
   describe("tool loop guard", () => {
     it("flags stuck when identical tool calls return identical outputs 6 times", () => {
-      let streak = { key: undefined, count: 0 };
+      let streak: { key: string | undefined; count: number; lastOutput?: string } = { key: undefined, count: 0 };
       let stuck = false;
 
       for (let i = 0; i < 6; i++) {
@@ -160,7 +160,7 @@ describe("autonomous action approval & loop guard", () => {
     });
 
     it("resets streak count when tool returns different output (polling/reading progress)", () => {
-      let streak = { key: undefined, count: 0 };
+      let streak: { key: string | undefined; count: number; lastOutput?: string } = { key: undefined, count: 0 };
 
       for (let i = 0; i < 20; i++) {
         // Output changes on each poll

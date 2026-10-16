@@ -2,9 +2,11 @@ import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import {
   browserActFromTool,
+  browserClearOriginStorageFromTool,
   browserNavigateFromTool,
   browserSnapshotFromTool,
   parseBrowserActions,
+  parseBrowserClearOriginStorageRequest,
 } from "./browser-tools.js";
 import { filterPageBrowserTools, PAGE_BROWSER_TOOL_NAMES } from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
@@ -411,10 +413,81 @@ describe("browser tools", () => {
 
   it("hides page browser tools when the computer is not graphical", () => {
     const tools = [...PAGE_BROWSER_TOOL_NAMES].map((name) => ({ name }));
-    expect(filterPageBrowserTools(tools, true)).toHaveLength(3);
+    expect(filterPageBrowserTools(tools, true)).toHaveLength(4);
     expect(filterPageBrowserTools(tools, false)).toEqual([]);
     expect(filterPageBrowserTools([{ name: "computer_act" }, ...tools], false)).toEqual([
       { name: "computer_act" },
     ]);
+  });
+
+  it("validates and executes browser_clear_origin_storage scoped to one origin", async () => {
+    expect(() => parseBrowserClearOriginStorageRequest({ origin: "ftp://bad.test" })).toThrow(
+      /HTTP\(S\) origin/i,
+    );
+    expect(() =>
+      parseBrowserClearOriginStorageRequest({
+        origin: "https://user:pass@example.test",
+      }),
+    ).toThrow(/credentials/i);
+    expect(() =>
+      parseBrowserClearOriginStorageRequest({
+        origin: "https://example.test",
+        storageTypes: ["unknown_storage"],
+      }),
+    ).toThrow(/Unsupported browser storage type/i);
+
+    const browser = new FakeBrowserProvider();
+    const res = await browserClearOriginStorageFromTool(browser, computer, context, {
+      origin: "https://example.test/some/path?query=1",
+      storageTypes: ["cookies", "local_storage"],
+    });
+    expect(res).toMatchObject({
+      ok: true,
+      origin: "https://example.test",
+      clearedStorageTypes: ["cookies", "local_storage"],
+    });
+  });
+
+  it("propagates main-document HTTP status and classifies 400/429/5xx in browserNavigateFromTool", async () => {
+    const browser = new FakeBrowserProvider();
+    browser.navigate = async () => ({
+      url: "https://example.test/rate-limit",
+      title: "Too Many Requests",
+      httpStatus: 429,
+      httpStatusStatus: "known",
+      redirected: false,
+      retryAfterMs: 15_000,
+    });
+    const res429 = await browserNavigateFromTool(browser, computer, context, {
+      url: "https://example.test/rate-limit",
+    });
+    expect(res429).toMatchObject({
+      ok: false,
+      httpStatus: 429,
+      httpStatusStatus: "known",
+      retryAfterMs: 15_000,
+      errorCode: "HTTP_429",
+      errorKind: "rate_limited",
+      retryable: true,
+    });
+
+    browser.navigate = async () => ({
+      url: "https://example.test/bad-cookie",
+      title: "Bad Request",
+      httpStatus: 400,
+      httpStatusStatus: "known",
+    });
+    const res400 = await browserNavigateFromTool(browser, computer, context, {
+      url: "https://example.test/bad-cookie",
+    });
+    expect(res400).toMatchObject({
+      ok: false,
+      httpStatus: 400,
+      httpStatusStatus: "known",
+      errorCode: "FLOW_STATE_INVALID",
+      errorKind: "flow_state_invalid",
+      retryable: true,
+      note: expect.stringContaining("browser_clear_origin_storage"),
+    });
   });
 });

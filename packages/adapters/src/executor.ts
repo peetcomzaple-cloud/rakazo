@@ -191,6 +191,7 @@ import { createBrowserProvider } from "./browser-provider-factory.js";
 import { BrowserRecovery } from "./browser-recovery.js";
 import {
   browserActFromTool,
+  browserClearOriginStorageFromTool,
   browserNavigateFromTool,
   browserSnapshotFromTool,
   isBrowserNoOp,
@@ -225,7 +226,7 @@ function extractJsonDeliverable(text: string): unknown | null {
   let match: RegExpExecArray | null;
   while ((match = codeBlockRegex.exec(text)) !== null) {
     try {
-      const parsed = JSON.parse(match[1].trim());
+      const parsed = JSON.parse((match[1] ?? "").trim());
       if (parsed && typeof parsed === "object") return parsed;
     } catch {}
   }
@@ -299,6 +300,7 @@ import {
   computerVisualActionKey,
   isKeyboardSubmitAction,
   isPointerClickAction,
+  isWindowCloseAction,
   isWindowClosed,
   observationToolResult,
   parseComputerActions,
@@ -379,6 +381,7 @@ import {
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
+import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import {
   formatThaiToolActivity,
   repairThaiExplanation,
@@ -4022,7 +4025,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   runId,
                   spaceId: run.spaceId,
                   status: "completed",
-                  kind: { in: ["browser_navigate", "browser_act", "computer_act"] },
+                  kind: {
+                    in: [
+                      "browser_navigate",
+                      "browser_act",
+                      "browser_clear_origin_storage",
+                      "computer_act",
+                    ],
+                  },
                 },
                 orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
                 select: { kind: true, result: true },
@@ -4235,7 +4245,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               true,
             );
           } catch (err) {
-            getLogger().warn("Direct screenshot capture failed", err);
+            getLogger().warn("Direct screenshot capture failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
         const formatObservation = async (
@@ -4964,18 +4976,46 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             return computerScreenToolResult(async () => {
               const obs = await deps.sandbox.observe(computer, context);
-              lastComputerObservation = obs;
               if (obs.windows) {
                 latestWindowsInventory = obs.windows;
                 if (isWindowCloseTask(task.prompt)) {
-                  const hasChromium = obs.windows.some(
+                  const hasCurrentChromium = obs.windows.some(
                     (w) =>
-                      w.wmClass?.toLowerCase().includes("chromium") ||
-                      w.wmClass?.toLowerCase().includes("chrome"),
+                      (w.wmClass?.toLowerCase().includes("chromium") ||
+                        w.wmClass?.toLowerCase().includes("chrome")) &&
+                      w.isCurrentProfile !== false,
                   );
-                  targetWindowClosed = !hasChromium;
+                  if (obs.windowInventoryStatus === "unknown" || hasCurrentChromium) {
+                    targetWindowClosed = false;
+                  } else if (!targetWindowClosed && lastComputerObservation) {
+                    const targetWinBefore = lastComputerObservation.windows?.find(
+                      (w) =>
+                        (w.wmClass?.toLowerCase().includes("chromium") ||
+                          w.wmClass?.toLowerCase().includes("chrome")) &&
+                        w.isCurrentProfile === true,
+                    );
+                    if (targetWinBefore) {
+                      const closeEvidence = verifyWindowCloseEvidence({
+                        targetWindowId: targetWinBefore.id,
+                        beforeObservation: lastComputerObservation,
+                        afterObservation: obs,
+                        activeWindowBefore:
+                          lastComputerObservation.activeWindow?.id &&
+                          typeof lastComputerObservation.activeWindow.title === "string"
+                            ? {
+                                id: lastComputerObservation.activeWindow.id,
+                                title: lastComputerObservation.activeWindow.title,
+                              }
+                            : undefined,
+                      });
+                      targetWindowClosed = closeEvidence.verified;
+                    } else {
+                      targetWindowClosed = false;
+                    }
+                  }
                 }
               }
+              lastComputerObservation = obs;
               return formatObservation(obs);
             });
           }
@@ -4995,9 +5035,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             return computerScreenToolResult(async () => {
               const hasPointer = actions.some((action) => action.kind === "pointer");
+              const hasCloseAction = actions.some(isWindowCloseAction);
+              const needsCloseVerification = hasCloseAction || isWindowCloseTask(task.prompt);
               if (
                 hasPointer &&
-                !modelAcceptsImageInput(modelChoice.modelProvider, modelChoice.modelId)
+                !modelAcceptsImageInput(modelChoice.modelProvider ?? "", modelChoice.modelId ?? "")
               ) {
                 if (applied) {
                   await deps.prisma.externalEffect
@@ -5046,6 +5088,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     verified: false,
                   };
                 }
+                lastComputerObservation = currentScreen;
+                if (currentScreen.windows) {
+                  latestWindowsInventory = currentScreen.windows;
+                }
+              } else if (
+                needsCloseVerification &&
+                (!lastComputerObservation ||
+                  !lastComputerObservation.windowInventoryFreshness ||
+                  !lastComputerObservation.screenIdentity ||
+                  !Number.isFinite(Date.parse(lastComputerObservation.capturedAt)) ||
+                  Date.now() - Date.parse(lastComputerObservation.capturedAt) > 20_000)
+              ) {
+                const freshBefore = await deps.sandbox.observe(computer, context);
+                lastComputerObservation = freshBefore;
+                if (freshBefore.windows) {
+                  latestWindowsInventory = freshBefore.windows;
+                }
+              }
+              if (
+                lastComputerObservation &&
+                Date.now() <= Date.parse(lastComputerObservation.capturedAt)
+              ) {
+                await new Promise((resolve) => setTimeout(resolve, 2));
               }
               workspaceCheckpoint.markDirty();
               const result = await deps.sandbox.act(
@@ -5102,45 +5167,77 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 searchAttempted = true;
               }
               webActionsCount++;
+              const priorFrameId = lastComputerObservation?.frameId ?? lastComputerFrameId;
+              if (
+                result.observation &&
+                result.observation.unchangedScreen === undefined &&
+                priorFrameId
+              ) {
+                result.observation.unchangedScreen =
+                  result.observation.frameId.split(":")[0] === priorFrameId.split(":")[0];
+              }
               const completedCount = Number(result.completed ?? 0);
               lastWebActionOk = result.applied !== false && (completedCount > 0 || actList.length === 0);
               lastWebActionVerified =
                 completedCount > 0 &&
                 (result.verified === true ||
-                  (result.observation && result.observation.unchangedScreen === false));
+                  (result.observation !== undefined && result.observation.unchangedScreen === false));
               if (result.observation) {
                 latestWindowsInventory = result.observation.windows;
-                if (isWindowCloseTask(task.prompt)) {
+                if (needsCloseVerification) {
                   if (result.observation.windowInventoryStatus === "unknown") {
                     targetWindowClosed = false;
+                    if (hasCloseAction) {
+                      lastWebActionOk = false;
+                      lastWebActionVerified = false;
+                      lastWebActionError = "Window inventory status is unknown";
+                    }
                   } else {
-                    const targetWinBefore = lastComputerObservation?.windows?.find(
-                      (w) =>
-                        (w.wmClass?.toLowerCase().includes("chromium") ||
-                          w.wmClass?.toLowerCase().includes("chrome")) &&
-                        (w as { isCurrentProfile?: boolean }).isCurrentProfile !== false,
-                    );
+                    const targetWinBefore =
+                      lastComputerObservation?.windows?.find(
+                        (w) =>
+                          (w.wmClass?.toLowerCase().includes("chromium") ||
+                            w.wmClass?.toLowerCase().includes("chrome")) &&
+                          w.isCurrentProfile === true,
+                      ) ??
+                      (hasCloseAction && lastComputerObservation?.activeWindow
+                        ? lastComputerObservation.windows?.find(
+                            (w) =>
+                              w.id === lastComputerObservation?.activeWindow?.id &&
+                              w.isCurrentProfile === true,
+                          )
+                        : undefined);
                     if (targetWinBefore) {
                       const closeEvidence = verifyWindowCloseEvidence({
                         targetWindowId: targetWinBefore.id,
-                        beforeObservation: lastComputerObservation as any,
-                        afterObservation: result.observation as any,
-                        activeWindowBefore: lastComputerObservation?.activeWindow as any,
+                        beforeObservation: lastComputerObservation,
+                        afterObservation: result.observation,
+                        activeWindowBefore:
+                          lastComputerObservation?.activeWindow?.id &&
+                          typeof lastComputerObservation.activeWindow.title === "string"
+                            ? {
+                                id: lastComputerObservation.activeWindow.id,
+                                title: lastComputerObservation.activeWindow.title,
+                              }
+                            : undefined,
+                        requireFocusProof: true,
                       });
                       targetWindowClosed = closeEvidence.verified;
-                      if (!closeEvidence.verified) {
+                      if (closeEvidence.verified) {
+                        lastWebActionOk = true;
+                        lastWebActionVerified = true;
+                      } else if (hasCloseAction) {
                         lastWebActionOk = false;
                         lastWebActionVerified = false;
                         lastWebActionError = closeEvidence.reason;
                       }
                     } else {
-                      const hasChromium = result.observation.windows?.some(
-                        (w) =>
-                          (w.wmClass?.toLowerCase().includes("chromium") ||
-                            w.wmClass?.toLowerCase().includes("chrome")) &&
-                          (w as { isCurrentProfile?: boolean }).isCurrentProfile !== false,
-                      );
-                      targetWindowClosed = !hasChromium;
+                      targetWindowClosed = false;
+                      if (hasCloseAction) {
+                        lastWebActionOk = false;
+                        lastWebActionVerified = false;
+                        lastWebActionError = "Target was not observed in the before inventory";
+                      }
                     }
                   }
                 }
@@ -5930,7 +6027,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ? browserNavigateFromTool
                 : name === "browser_snapshot"
                   ? browserSnapshotFromTool
-                  : null;
+                  : name === "browser_clear_origin_storage"
+                    ? browserClearOriginStorageFromTool
+                    : null;
             return computerScreenToolResult(async () => {
               const result =
                 name === "browser_navigate"
@@ -6075,6 +6174,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   });
                   loginFormVisible = hasPasswordField || (hasUserOrEmailField && hasPasswordField);
                 }
+              } else if (name === "browser_clear_origin_storage") {
+                webActionsCount++;
+                const clearRes = result as {
+                  ok?: boolean;
+                  error?: string;
+                };
+                if (clearRes.ok === false || clearRes.error) {
+                  lastWebActionOk = false;
+                  lastWebActionVerified = false;
+                  lastWebActionError = clearRes.error;
+                } else {
+                  lastWebActionOk = true;
+                  lastWebActionError = undefined;
+                  lastWebActionVerified = true;
+                }
               } else if (name === "browser_act") {
                 webActionsCount++;
                 const actArgs = args as {
@@ -6143,6 +6257,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   error?: string;
                   noOp?: boolean;
                   stateChanged?: boolean;
+                  verified?: boolean;
                   isModal?: boolean;
                   activeModal?: string;
                 };
@@ -8726,6 +8841,7 @@ export const PAGE_BROWSER_TOOL_NAMES = new Set([
   "browser_navigate",
   "browser_snapshot",
   "browser_act",
+  "browser_clear_origin_storage",
 ]);
 
 export function filterPageBrowserTools<T extends { name: string }>(

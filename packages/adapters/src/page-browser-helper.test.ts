@@ -3,7 +3,7 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("../../../infra/sandboxes/computer/rakazo-page-browser", import.meta.url), "utf8");
-const helpers = source.match(/EVAL_HELPERS\s*=\s*r?"""([\s\S]*?)"""/)![1];
+const helpers = source.match(/EVAL_HELPERS\s*=\s*r?"""([\s\S]*?)"""/)![1]!;
 
 function page() {
   const dom = new JSDOM('<body><button id="noop">No change</button><button id="change">Continue</button></body>', {

@@ -3,24 +3,31 @@ import { type ToolCallStreak, trackToolCallStreak } from "@rakazo/core";
 // Same tool, same arguments, this many times in a row means the agent is stuck, not paginating.
 const MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS = 6;
 
-export type ExtendedToolCallStreak = ToolCallStreak & {
+export interface ExtendedToolCallStreak extends ToolCallStreak {
   lastOutput?: string;
-};
+}
+
+export type ToolCallStreakWithOutput = ExtendedToolCallStreak;
+
+function normalizeToolOutput(output: unknown): string {
+  return typeof output === "string" ? output : JSON.stringify(output ?? "");
+}
 
 export function recordToolResult(
   streak: ExtendedToolCallStreak,
-  output: string,
+  output: unknown,
 ): ExtendedToolCallStreak {
-  if (streak.lastOutput !== undefined && streak.lastOutput !== output) {
+  const serialized = normalizeToolOutput(output);
+  if (streak.lastOutput !== undefined && streak.lastOutput !== serialized) {
     return {
       ...streak,
       count: 0,
-      lastOutput: output,
+      lastOutput: serialized,
     };
   }
   return {
     ...streak,
-    lastOutput: output,
+    lastOutput: serialized,
   };
 }
 
@@ -28,7 +35,7 @@ export function advanceToolCallLoopGuard(
   streak: ExtendedToolCallStreak,
   name: string,
   args: unknown,
-  output?: string,
+  output?: unknown,
 ): { streak: ExtendedToolCallStreak; stuck: boolean } {
   let next = trackToolCallStreak(streak, name, args) as ExtendedToolCallStreak;
   if (output !== undefined) {

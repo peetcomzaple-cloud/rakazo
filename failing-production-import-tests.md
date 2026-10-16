@@ -1,10 +1,10 @@
 # Failing Production Import Tests / Adapters Verification
 
-**Baseline Commit:** `58c3c8c5a1fba747ea438086ad2ffac382c87918`
+**Baseline Commit:** `67f37b16dc3c00584ac28bbdb1871e658e9516ff`
 
 **Command Ran:** `pnpm run check --filter @rakazo/adapters`
 
-**Results (Before vs After):**
+**Results:**
 No codebase patches were applied (as instructed) to `packages/adapters/src/executor.ts`. The errors represent genuine integration gaps between the newly introduced spikes/interfaces and the actual `executor` code.
 
 **Exit Code:** `1`

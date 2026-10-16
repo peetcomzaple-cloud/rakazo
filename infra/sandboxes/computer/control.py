@@ -3,9 +3,11 @@
 
 import base64
 import ctypes
+from datetime import datetime, timezone
 import hmac
 import json
 import os
+import posixpath
 import re
 import subprocess
 import threading
@@ -252,16 +254,145 @@ def run_control_argv(argv, display):
         raise RuntimeError("computer action failed")
 
 
-def capture(display):
+def iso_utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def normalize_window_id(raw_id):
+    value = (raw_id or "").strip()
+    if not value:
+        return ""
+    try:
+        num = int(value, 16) if value.lower().startswith("0x") else int(value, 10)
+        return f"0x{num:08x}" if num > 0 else ""
+    except ValueError:
+        return value
+
+
+def resolve_browser_profile(display, browser_profile=None):
+    if isinstance(browser_profile, str) and browser_profile.strip():
+        return browser_profile.strip()
+    display_num = display.lstrip(":").split(".", 1)[0]
+    if display_num.isdigit():
+        try:
+            with open(f"/tmp/rakazo/browser-profile-{int(display_num)}", "r", encoding="utf-8") as handle:
+                profile = handle.read().strip()
+                if profile:
+                    return profile
+        except OSError:
+            pass
+    return None
+
+
+def cmdline_matches_profile(raw_cmdline, browser_profile):
+    if not browser_profile:
+        return False
+    target = posixpath.normpath(browser_profile.strip())
+    if not target or target == ".":
+        return False
+    if isinstance(raw_cmdline, bytes):
+        raw_cmdline = raw_cmdline.decode("utf-8", "replace")
+    args = [arg for arg in raw_cmdline.split("\0") if arg]
+    for index, arg in enumerate(args):
+        if arg.startswith("--user-data-dir="):
+            value = arg.split("=", 1)[1].strip()
+            if value and posixpath.normpath(value) == target:
+                return True
+        elif arg == "--user-data-dir" and index + 1 < len(args):
+            value = args[index + 1].strip()
+            if value and posixpath.normpath(value) == target:
+                return True
+    return False
+
+
+def window_matches_profile(pid_int, browser_profile):
+    if not browser_profile or not pid_int or pid_int <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid_int}/cmdline", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return False
+    return cmdline_matches_profile(raw, browser_profile)
+
+
+def collect_window_inventory(env, browser_profile=None):
+    freshness = iso_utc_now()
+    try:
+        proc = subprocess.run(
+            ["wmctrl", "-lxp"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown", freshness, None
+    if proc.returncode != 0:
+        return "unknown", freshness, None
+    windows = []
+    seen = set()
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 5)
+        if len(parts) < 4:
+            continue
+        wid = normalize_window_id(parts[0])
+        if not wid or wid in seen:
+            continue
+        seen.add(wid)
+        pid_val = int(parts[2]) if parts[2].isdigit() and int(parts[2]) > 0 else None
+        wm_class = parts[3]
+        title = parts[5].strip() if len(parts) >= 6 else ""
+        entry = {
+            "id": wid,
+            "wmClass": wm_class,
+            "isCurrentProfile": window_matches_profile(pid_val, browser_profile),
+        }
+        if pid_val is not None:
+            entry["pid"] = pid_val
+        if title:
+            entry["title"] = title
+        windows.append(entry)
+    status = "validnonempty" if windows else "validempty"
+    return status, freshness, windows
+
+
+def capture(display, browser_profile=None):
     env = {**os.environ, "DISPLAY": display}
 
     def output(argv, fallback=""):
         return subprocess.run(argv, env=env, capture_output=True, text=True).stdout.strip() or fallback
 
+    resolved_profile = resolve_browser_profile(display, browser_profile)
+    inv_status, inv_freshness, windows = collect_window_inventory(env, resolved_profile)
     geometry = output(["xdotool", "getdisplaygeometry"], "1280 800").split()
     cursor = output(["xdotool", "getmouselocation", "--shell"])
-    window = output(["xdotool", "getactivewindow"])
-    title = output(["xdotool", "getwindowname", window]) if window else ""
+    raw_window = output(["xdotool", "getactivewindow"])
+    title = output(["xdotool", "getwindowname", raw_window]) if raw_window else ""
+    normalized_active_id = normalize_window_id(raw_window) if raw_window else ""
+    matched_active = (
+        next((w for w in (windows or []) if w.get("id") == normalized_active_id), None)
+        if normalized_active_id
+        else None
+    )
+    active_window = None
+    if raw_window:
+        active_id = matched_active["id"] if matched_active else (normalized_active_id or raw_window)
+        active_title = title or (matched_active.get("title", "") if matched_active else "")
+        active_window = {
+            "id": active_id,
+            **({"title": active_title} if active_title else {}),
+            **({"wmClass": matched_active["wmClass"]} if matched_active and "wmClass" in matched_active else {}),
+            **({"pid": matched_active["pid"]} if matched_active and "pid" in matched_active else {}),
+            **(
+                {"isCurrentProfile": matched_active["isCurrentProfile"]}
+                if matched_active and "isCurrentProfile" in matched_active
+                else {}
+            ),
+        }
     image = None
     width = height = damage = None
     with NATIVE_LOCK:
@@ -281,14 +412,20 @@ def capture(display):
         width, height, damage = (int(geometry[0]), int(geometry[1]), None)
     if image.returncode:
         raise RuntimeError(image.stderr.decode("utf-8", "replace") or "screen capture failed")
+    captured_at = iso_utc_now()
     fields = dict(line.split("=", 1) for line in cursor.splitlines() if "=" in line)
     return {
         "image": base64.b64encode(image.stdout).decode("ascii"),
         "mimeType": "image/png",
         "width": width,
         "height": height,
+        "display": display,
+        "capturedAt": captured_at,
+        "windowInventoryStatus": inv_status,
+        "windowInventoryFreshness": inv_freshness,
+        **({"windows": windows} if windows is not None else {}),
         **({"cursor": {"x": int(fields["X"]), "y": int(fields["Y"])}} if "X" in fields and "Y" in fields else {}),
-        **({"activeWindow": {"id": window, **({"title": title} if title else {})}} if window else {}),
+        **({"activeWindow": active_window} if active_window else {}),
         **({"damage": damage} if damage else {}),
     }
 
@@ -311,6 +448,9 @@ class Handler(BaseHTTPRequestHandler):
             display = body.get("display", ":1")
             if not isinstance(display, str) or not re.fullmatch(r":[0-9]+", display):
                 raise RuntimeError("invalid display")
+            browser_profile = body.get("browserProfile")
+            if browser_profile is not None and not isinstance(browser_profile, str):
+                browser_profile = None
             with display_lock(display):
                 for step in body.get("steps", []):
                     if "waitMs" in step:
@@ -332,7 +472,7 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(settle_ms / 1000)
                 response = {"completed": len(body.get("steps", []))}
                 if body.get("observe", True):
-                    response["observation"] = capture(display)
+                    response["observation"] = capture(display, browser_profile)
             encoded = json.dumps(response, separators=(",", ":")).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

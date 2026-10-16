@@ -827,39 +827,50 @@ export function renderPptxPackage(title: string, content: string | Record<string
  * Format LaTeX math equations into clean Unicode mathematical notation.
  */
 export function formatMathFormulas(text: string): string {
-  return text.replace(/\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g, (_match, display, inline) => {
-    let eq = (display || inline || "").trim();
-    eq = eq
-      .replace(/\\sum(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g, (_m, sub, sup) => {
-        if (sub && sup) return `∑(${sub}..${sup}) `;
-        if (sub) return `∑_${sub} `;
-        return `∑ `;
-      })
-      .replace(/\\prod(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g, (_m, sub, sup) => {
-        if (sub && sup) return `∏(${sub}..${sup}) `;
-        return `∏ `;
-      })
-      .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1 / $2)")
-      .replace(/\\sqrt\{([^{}]+)\}/g, "√($1)")
-      .replace(/\\times/g, "×")
-      .replace(/\\div/g, "÷")
-      .replace(/\\cdot/g, "·")
-      .replace(/\\pm/g, "±")
-      .replace(/\\leq/g, "≤")
-      .replace(/\\geq/g, "≥")
-      .replace(/\\neq/g, "≠")
-      .replace(/\\approx/g, "≈")
-      .replace(/\\equiv/g, "≡")
-      .replace(/\\infty/g, "∞")
-      .replace(/\\in\b/g, "∈")
-      .replace(/\\forall/g, "∀")
-      .replace(/\\exists/g, "∃")
-      .replace(/\\to\b|\\rightarrow/g, "→")
-      .replace(/\\leftarrow/g, "←")
-      .replace(/\\int(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g, (_m, sub, sup) => {
-        if (sub && sup) return `∫(${sub}..${sup}) `;
-        return `∫ `;
-      })
+  return text.replace(
+    /\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g,
+    (_match: string, display?: string, inline?: string) => {
+      let eq = (display || inline || "").trim();
+      eq = eq
+        .replace(
+          /\\sum(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g,
+          (_m: string, sub?: string, sup?: string) => {
+            if (sub && sup) return `∑(${sub}..${sup}) `;
+            if (sub) return `∑_${sub} `;
+            return `∑ `;
+          },
+        )
+        .replace(
+          /\\prod(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g,
+          (_m: string, sub?: string, sup?: string) => {
+            if (sub && sup) return `∏(${sub}..${sup}) `;
+            return `∏ `;
+          },
+        )
+        .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1 / $2)")
+        .replace(/\\sqrt\{([^{}]+)\}/g, "√($1)")
+        .replace(/\\times/g, "×")
+        .replace(/\\div/g, "÷")
+        .replace(/\\cdot/g, "·")
+        .replace(/\\pm/g, "±")
+        .replace(/\\leq/g, "≤")
+        .replace(/\\geq/g, "≥")
+        .replace(/\\neq/g, "≠")
+        .replace(/\\approx/g, "≈")
+        .replace(/\\equiv/g, "≡")
+        .replace(/\\infty/g, "∞")
+        .replace(/\\in\b/g, "∈")
+        .replace(/\\forall/g, "∀")
+        .replace(/\\exists/g, "∃")
+        .replace(/\\to\b|\\rightarrow/g, "→")
+        .replace(/\\leftarrow/g, "←")
+        .replace(
+          /\\int(?:_\{([^}]+)\})?(?:\^\{([^}]+)\})?/g,
+          (_m: string, sub?: string, sup?: string) => {
+            if (sub && sup) return `∫(${sub}..${sup}) `;
+            return `∫ `;
+          },
+        )
       .replace(/\\alpha/g, "α")
       .replace(/\\beta/g, "β")
       .replace(/\\gamma/g, "γ")
@@ -1855,6 +1866,24 @@ export async function renderDocument(spec: DocumentSpec): Promise<DocumentRender
       let y = 50;
       linesSvg.push(`<text x="40" y="${y}" font-family="'Noto Sans Thai', 'Garuda', sans-serif" font-size="24" font-weight="bold" fill="#111111">${escapeXml(title)}</text>`);
       y += 40;
+      const doc =
+        typeof rawContent === "object" && rawContent !== null
+          ? (rawContent as {
+              sections?: Array<{
+                heading?: string;
+                paragraphs?: string[];
+                table?: { headers: string[]; rows?: string[][] };
+              }>;
+            })
+          : {
+              sections: [
+                {
+                  paragraphs: textContent
+                    .split("\n")
+                    .filter((line) => line.trim().length > 0),
+                },
+              ],
+            };
       for (const section of doc.sections || []) {
         if (section.heading) {
           linesSvg.push(`<text x="40" y="${y}" font-family="'Noto Sans Thai', 'Garuda', sans-serif" font-size="18" font-weight="bold" fill="#2563eb">${escapeXml(section.heading)}</text>`);

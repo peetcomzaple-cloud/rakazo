@@ -45,7 +45,10 @@ export function retryEmptyProviderError(
           event.type === "toolcall_start";
         const errCandidate =
           event.type === "error"
-            ? (event.error?.errorMessage || event.error?.message || last.errorMessage || "")
+            ? (event.error?.errorMessage ||
+              (event.error as { message?: string } | undefined)?.message ||
+              last.errorMessage ||
+              "")
             : "";
         if (
           event.type === "error" &&

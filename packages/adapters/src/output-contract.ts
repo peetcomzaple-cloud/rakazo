@@ -154,14 +154,14 @@ export function detectOutputContract(prompt: string): OutputContract | undefined
     for (const entry of entries) {
       // Check for array like: orders:[{...}] or orders:[...]
       const arrayMatch = entry.match(/^([a-zA-Z0-9_]+)\s*:\s*\[/);
-      if (arrayMatch) {
+      if (arrayMatch?.[1]) {
         fields.push(arrayMatch[1]);
         fieldTypes[arrayMatch[1]] = "array";
         continue;
       }
       // Check for colon types like: field:boolean, field:number|null, field: ALLOW หรือ DENY
       const colonMatch = entry.match(/^([a-zA-Z0-9_]+)\s*:\s*(.+)$/);
-      if (colonMatch) {
+      if (colonMatch?.[1] && colonMatch[2]) {
         const fieldName = colonMatch[1];
         const typePart = colonMatch[2].toLowerCase();
         fields.push(fieldName);
@@ -181,7 +181,7 @@ export function detectOutputContract(prompt: string): OutputContract | undefined
       }
       // Check for typed field in parentheses like: name (string)
       const parenTypeMatch = entry.match(/^([a-zA-Z0-9_]+)\s*\(\s*(string|boolean|number|object|array)\b/i);
-      if (parenTypeMatch) {
+      if (parenTypeMatch?.[1] && parenTypeMatch[2]) {
         fields.push(parenTypeMatch[1]);
         fieldTypes[parenTypeMatch[1]] = parenTypeMatch[2].toLowerCase() as any;
         continue;
@@ -199,10 +199,10 @@ export function detectOutputContract(prompt: string): OutputContract | undefined
 
   // Also check for colon notation: คืน JSON: release (string), failed_check (string)...
   const colonListMatch = prompt.match(/(?:คืน|แสดง)\s+JSON\s*:\s*([a-zA-Z0-9_,\s():]+?)(?:และ|\r|\n|$)/i);
-  if (colonListMatch && (!requiredFields || requiredFields.length === 0)) {
+  if (colonListMatch?.[1] && (!requiredFields || requiredFields.length === 0)) {
     const fields = colonListMatch[1]
       .split(",")
-      .map((s) => s.replace(/\([^)]*\)/g, "").split(":")[0].trim())
+      .map((s) => (s.replace(/\([^)]*\)/g, "").split(":")[0] ?? "").trim())
       .filter((s) => /^[a-zA-Z0-9_]+$/.test(s));
     if (fields.length > 0) {
       requiredFields = fields;
@@ -214,8 +214,14 @@ export function detectOutputContract(prompt: string): OutputContract | undefined
   let match: RegExpExecArray | null;
   while ((match = typedFieldRegex.exec(prompt)) !== null) {
     const fieldName = match[1];
-    const typeName = match[2].toLowerCase() as "string" | "boolean" | "number" | "object" | "array";
-    if (!fieldTypes[fieldName]) {
+    const typeName = match[2]?.toLowerCase() as
+      | "string"
+      | "boolean"
+      | "number"
+      | "object"
+      | "array"
+      | undefined;
+    if (fieldName && typeName && !fieldTypes[fieldName]) {
       fieldTypes[fieldName] = typeName;
     }
   }
@@ -300,7 +306,7 @@ export function attemptJsonTextRepair(raw: string): string {
     if (c === ",") {
       // Look ahead to see if next non-whitespace character is } or ]
       let nextIdx = i + 1;
-      while (nextIdx < raw.length && /\s/.test(raw[nextIdx])) {
+      while (nextIdx < raw.length && /\s/.test(raw[nextIdx] ?? "")) {
         nextIdx++;
       }
       if (nextIdx < raw.length && (raw[nextIdx] === "}" || raw[nextIdx] === "]")) {
@@ -647,7 +653,7 @@ export function validateOutputContract(
   let fencePreamble = "";
   let m: RegExpExecArray | null;
   while ((m = fenceRegex.exec(trimmed)) !== null) {
-    lastFenceMatch = m[1].trim();
+    lastFenceMatch = (m[1] ?? "").trim();
     fencePreamble = trimmed.slice(0, m.index).trim();
   }
 

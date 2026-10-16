@@ -24,15 +24,28 @@ const EMPTY_PNG = Uint8Array.from(
   ),
 );
 
+let captureSequence = 0;
+
 export function computerObservation(
   image: Uint8Array,
-  input: Omit<ComputerObservation, "frameId" | "capturedAt" | "image">,
+  input: Omit<ComputerObservation, "frameId" | "capturedAt" | "image"> & {
+    frameId?: string;
+    capturedAt?: string;
+  },
 ): ComputerObservation {
+  const capturedAt =
+    typeof input.capturedAt === "string" && Number.isFinite(Date.parse(input.capturedAt))
+      ? input.capturedAt
+      : new Date().toISOString();
+  const imageHash = createHash("sha256").update(image).digest("hex");
   return {
     ...input,
     image,
-    frameId: createHash("sha256").update(image).digest("hex"),
-    capturedAt: new Date().toISOString(),
+    frameId:
+      typeof input.frameId === "string" && input.frameId.length > 0
+        ? input.frameId
+        : `${imageHash}:${++captureSequence}`,
+    capturedAt,
   };
 }
 

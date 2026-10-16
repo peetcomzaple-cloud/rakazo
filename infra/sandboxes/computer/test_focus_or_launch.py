@@ -248,6 +248,7 @@ class ControlArgvTest(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["timeout"], control.FOCUS_COMPLETION_SEC)
         self.assertGreater(control.FOCUS_COMPLETION_SEC, control.LAUNCH_SPAWN_POLL_SEC)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires POSIX env and sh")
     def test_slow_focus_is_not_reported_before_the_wrapper_exits(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "rakazo-focus-or-launch"
@@ -261,6 +262,97 @@ class ControlArgvTest(unittest.TestCase):
                 elapsed = time.monotonic() - started
             self.assertGreaterEqual(elapsed, 0.45)
             self.assertTrue(marker.exists())
+
+    def test_capture_populates_window_inventory_and_normalizes_active_window(self):
+        def fake_run(argv, **_kwargs):
+            if argv == ["wmctrl", "-lxp"]:
+                return subprocess.CompletedProcess(
+                    argv,
+                    0,
+                    "0x01400003 0 4242 chromium.Chromium host Example Page\n"
+                    "0x02000001 0 5151 xterm.XTerm host Terminal\n",
+                    "",
+                )
+            if argv == ["xdotool", "getdisplaygeometry"]:
+                return subprocess.CompletedProcess(argv, 0, "1280 800\n", "")
+            if argv == ["xdotool", "getmouselocation", "--shell"]:
+                return subprocess.CompletedProcess(argv, 0, "X=10\nY=20\n", "")
+            if argv == ["xdotool", "getactivewindow"]:
+                return subprocess.CompletedProcess(argv, 0, "20971523\n", "")
+            if argv[:2] == ["xdotool", "getwindowname"]:
+                return subprocess.CompletedProcess(argv, 0, "Example Page\n", "")
+            return subprocess.CompletedProcess(argv, 0, b"\x89PNG\r\n", b"")
+
+        with (
+            patch.object(control.subprocess, "run", side_effect=fake_run),
+            patch.object(control, "native_capture", return_value=None),
+            patch.object(
+                control,
+                "window_matches_profile",
+                side_effect=lambda pid, prof: pid == 4242 and prof == PROFILE,
+            ),
+        ):
+            obs = control.capture(":1", PROFILE)
+        self.assertEqual(obs["display"], ":1")
+        self.assertEqual(obs["windowInventoryStatus"], "validnonempty")
+        self.assertTrue(obs["windowInventoryFreshness"].endswith("Z"))
+        self.assertTrue(obs["capturedAt"].endswith("Z"))
+        self.assertEqual(
+            obs["windows"],
+            [
+                {
+                    "id": "0x01400003",
+                    "wmClass": "chromium.Chromium",
+                    "isCurrentProfile": True,
+                    "pid": 4242,
+                    "title": "Example Page",
+                },
+                {
+                    "id": "0x02000001",
+                    "wmClass": "xterm.XTerm",
+                    "isCurrentProfile": False,
+                    "pid": 5151,
+                    "title": "Terminal",
+                },
+            ],
+        )
+        self.assertEqual(
+            obs["activeWindow"],
+            {
+                "id": "0x01400003",
+                "title": "Example Page",
+                "wmClass": "chromium.Chromium",
+                "pid": 4242,
+                "isCurrentProfile": True,
+            },
+        )
+
+    def test_cmdline_matches_profile_parses_nul_argv_and_normalizes_paths(self):
+        self.assertTrue(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir={PROFILE}/\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertTrue(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir\0{PROFILE}/./\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir={PROFILE}-other\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(
+            control.cmdline_matches_profile(
+                "xterm\0-title\0Terminal\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(control.cmdline_matches_profile(f"chromium\0--user-data-dir={PROFILE}\0", None))
 
 
 class ScriptTest(unittest.TestCase):

@@ -251,4 +251,64 @@ describe("page browser safety", () => {
     await expect(provider.snapshot(computer, {}, { ...baseContext, signal })).rejects.toThrow();
     expect(driver).not.toHaveBeenCalled();
   });
+
+  it("forwards main-document HTTP metadata and supports clearOriginStorage", async () => {
+    const liveDriver = vi.fn(async (_c, request) => {
+      if (request.command === "navigate") {
+        return {
+          ok: true,
+          url: "https://example.test/final",
+          title: "Rate Limited",
+          httpStatus: 429,
+          httpStatusStatus: "known" as const,
+          redirected: true,
+          retryAfterMs: 45_000,
+          challengeDetected: true,
+        };
+      }
+      if (request.command === "clear_origin_storage") {
+        return {
+          ok: true,
+          origin: request.origin,
+          clearedStorageTypes: request.storageTypes,
+        };
+      }
+      return { ok: false, error: "unexpected" };
+    });
+    const provider = new ComputerBrowserProvider({ liveDriver });
+    const nav = await provider.navigate(
+      computer,
+      { url: "https://example.test/start" },
+      baseContext,
+    );
+    expect(nav).toMatchObject({
+      url: "https://example.test/final",
+      title: "Rate Limited",
+      httpStatus: 429,
+      httpStatusStatus: "known",
+      redirected: true,
+      retryAfterMs: 45_000,
+      challengeDetected: true,
+    });
+
+    const cleared = await provider.clearOriginStorage(
+      computer,
+      { origin: "https://example.test/path?ignore=1", storageTypes: ["cookies", "local_storage"] },
+      baseContext,
+    );
+    expect(cleared).toMatchObject({
+      ok: true,
+      origin: "https://example.test",
+      clearedStorageTypes: ["cookies", "local_storage"],
+    });
+    expect(liveDriver).toHaveBeenLastCalledWith(
+      computer,
+      {
+        command: "clear_origin_storage",
+        origin: "https://example.test",
+        storageTypes: ["cookies", "local_storage"],
+      },
+      baseContext,
+    );
+  });
 });

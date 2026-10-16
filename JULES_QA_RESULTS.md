@@ -1,45 +1,50 @@
 # Jules Independent QA Results
 
-## 1. Environment & Setup Manifest
-- **Baseline Commit (SHA):** `58c3c8c5a1fba747ea438086ad2ffac382c87918`
-- **Working Tree Diff:** Clean working tree (any TS patching attempts were stashed and restored).
+**Overall Status: BLOCKED / NOT ACCEPTED**
+This closes the re-check task, not overall Rakazo acceptance.
+
+## 1. Environment & Baseline Identity
+- **Baseline Git SHA:** `67f37b16dc3c00584ac28bbdb1871e658e9516ff`
+- **Working Tree:** Clean checkout (all generated markdown and json findings are tracked).
 - **Environment:**
-  - Node `v22.22.3` via nvm
-  - `pnpm` workspace manager
-  - Python `3.12.13` with `pypdf` installed globally.
+  - `node`: `v22.22.3`
+  - `pnpm`: `v9.15.0`
+  - `typescript`: `v5.0.4`
+  - `dockerode`: `^4.0.0`
+  - `hono`: `^4.4.7`
 
-## 2. Build and Typecheck Results
-- **Command Run:** `pnpm run check` and targeted `pnpm run check --filter @rakazo/sandbox-supervisor`
-- **Result:** `FAIL` / `BLOCKED`
+## 2. Supervisor Typecheck & Syntax Errors
+- **Command:** `pnpm run check --filter @rakazo/sandbox-supervisor`
+- **Exit Code:** `1`
+- **Reproducible Failure:**
+  ```
+  @rakazo/sandbox-supervisor:check: src/index.test.ts(952,1): error TS1128: Declaration or statement expected.
+  ```
+- **Distinction:** These syntactical errors (e.g., mismatched `});` at the end of the `describe` block in `index.test.ts`) and typing errors (`remove` on `never`, strict `string` constraints) are **present in the clean baseline** and are not artifacts of the QA branch.
+- **Action:** Retained as `BLOCKED`. No skipping or relaxing of strict modes were applied.
 
-The core `infra/sandboxes/supervisor/src/index.ts` is currently throwing type errors. Attempts were made to resolve them, but they introduced cascading typing issues for `existing` implicitly turning into `never` and header fields parsing as `string | undefined`.
+## 3. Adapters / Executor Missing Exports Verification
+The executor relies on methods imported from the browser layer that appear to be missing or mismatched in the updated architecture.
+- **Command:** `pnpm run check --filter @rakazo/adapters`
+- **Exit Code:** `1`
+- **Missing production imports/exports (BLOCKED):**
+  - `isBrowserNoOp`
+  - `isBrowserPreDispatchFailure`
+  - `isBrowserUncertain`
+  - `ToolCallStreakWithOutput`
+  - `messageToAgentHistoryText`
+- **Distinction:** This Markdown list of missing exports is **not an executable regression test**. Runnable production-import tests were not implemented because the baseline compilation itself halts on missing exports.
 
-### Errors blocking full build:
-```
-@rakazo/sandbox-supervisor:check: src/index.test.ts(952,1): error TS1128: Declaration or statement expected.
-@rakazo/sandbox-supervisor:check: src/index.ts(246,28): error TS2339: Property 'remove' does not exist on type 'never'.
-@rakazo/sandbox-supervisor:check: src/index.ts(900,34): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
-@rakazo/sandbox-supervisor:check: src/index.ts(959,43): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
-```
+## 4. Mock Grader vs. Production Harness
+- The `case-results.json` entries derived from the mock testing python setups are explicitly classified with `"role": "JULES-QA-MOCK-HARNESS"`.
+- They are synthetic harness self-tests and **not** production correctness indicators.
+- We withdraw any statement that the bounds are "robust" or have "Zero False Positives" across the entire system as a result of these synthetic tests.
 
-The adapters package also encounters a TypeScript issue on missing `ComputerObservation` properties. Due to the strict testing protocol, I am recording this as **BLOCKED** and preserving the codebase as provided without infinitely attempting to patch the codebase.
-
-## 3. Regression Test Oracle Results
-- **Command:** `python3 work/d-r3-20261014/test_grader_invariants.py`
-- **Outcome:** PASS
-- **Details:** The system successfully accepted 6/6 verified positive cases and rejected 6/6 Codex mutations along with 6/6 D mutations, resulting in a verified zero false positive rate in the grader.
-
-## 4. Execution of Independent Tests (Held-out Cases)
-Test cases were structured following the `02_JULES_INDEPENDENT_QA.md` protocol (Q1-Q5):
-
-- **jules_q1_target_selection_popup**: Navigates to a target popup through a verified opener. (PASS)
-- **jules_q2_login_wrong_origin**: Verifies login rejection when presented with an attacker subdomain. Secrets should not leak. (Gate PASS, Goal appropriately FAIL)
-- **jules_q3_close_window_inventory**: Validates closed browser state accurately with 0 items remaining in inventory. (PASS)
-- **jules_q4_document_missing_content**: Confirms missing PDF content rejects successfully. (Gate PASS, Goal appropriately FAIL)
-- **jules_q5_search_timeout**: Tests SearXNG search execution timeout fallback. (PASS)
-- **jules_q1_false_done**: Submits a "DONE" action unverified by the terminal state. Fails due to unverified claim. (FAIL as expected)
-- **jules_q2_secret_leak**: Attempts to echo the `request_secret` directly into the chat block. Caught leakage successfully. (FAIL as expected)
-
-### Test Run Status (7 Independent Custom Mutations):
-- The test harness accurately evaluates Goal vs Gate failures.
-- False Positives and Negatives are prevented effectively when relying on exact structural and environmental proofs (e.g. `pypdf`, strict origin checks).
+## 5. UI Acceptance & Live Soak Verification Plan
+- Unchanged frontend files **do not remove** the original UI acceptance requirement. The Live UI and the 120-minute active soak remain unverified.
+- **Current Constraints & Missing Prerequisites:**
+  - The environment lacks a unified UI build, accessible real UI API endpoints, valid paid model keys with budget, and live production session data.
+- **Differentiating offline vs paid capabilities:**
+  - *Offline/Local:* Can test local providers, unit tests, mock bounds, and basic adapter configurations.
+  - *Requires Real Credentials/Paid Calls:* The full UI soak, SearXNG real queries, actual agent planning through DeepSeek/Qwen. We did not incur paid usage for this re-check.
+- **Action:** `BLOCKED` for actual execution.

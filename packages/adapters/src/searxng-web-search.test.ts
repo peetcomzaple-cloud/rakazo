@@ -4,6 +4,10 @@ import { SearxngWebProvider } from "./searxng-web-search.js";
 
 function makeContext(signal?: AbortSignal): AdapterContext {
   return {
+    operationId: "test-op",
+    traceId: "test-trace",
+    spaceId: "space-1",
+    userId: "user-1",
     signal: signal ?? new AbortController().signal,
   };
 }
@@ -42,10 +46,10 @@ describe("SearxngWebProvider [Phase 3 Search & Read]", () => {
     const hits = await provider.search({ query: "Open Source AI", maxResults: 5 }, makeContext());
 
     expect(hits.length).toBe(2);
-    expect(hits[0].title).toBe("Open Source AI Models");
-    expect(hits[0].url).toBe("https://example.com/ai-1");
-    expect(hits[0].snippet).toContain("open weights");
-    expect(hits[1].title).toBe("DeepSeek Architecture");
+    expect(hits[0]!.title).toBe("Open Source AI Models");
+    expect(hits[0]!.url).toBe("https://example.com/ai-1");
+    expect(hits[0]!.snippet).toContain("open weights");
+    expect(hits[1]!.title).toBe("DeepSeek Architecture");
   });
 
   it("clamps results to maxResults requested", async () => {

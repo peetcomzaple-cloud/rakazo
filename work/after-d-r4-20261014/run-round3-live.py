@@ -267,6 +267,8 @@ def evaluate_case(case, record):
                 raw = base64.b64decode(b64)
                 if len(raw) < 1000:
                     return False
+                if art.get('size') is not None and art.get('size') != len(raw):
+                    return False
                 if not raw.startswith(b'%PDF-'):
                     return False
                 if b'%%EOF' not in raw[-1024:]:
@@ -274,9 +276,33 @@ def evaluate_case(case, record):
                 if b'/Catalog' not in raw and b'/Pages' not in raw:
                     return False
                 try:
+                    import hashlib
                     import io
                     from pypdf import PdfReader
-                    PdfReader(io.BytesIO(raw))
+                    reader = PdfReader(io.BytesIO(raw))
+                    page_count = len(reader.pages)
+                    if page_count < 1:
+                        return False
+                    extracted_text = ''.join((p.extract_text() or '') for p in reader.pages).strip()
+                    if not extracted_text:
+                        return False
+                    expected_sha = art.get('sha256')
+                    if isinstance(expected_sha, str) and expected_sha:
+                        if hashlib.sha256(raw).hexdigest().lower() != expected_sha.lower():
+                            return False
+                    expected_pages = None
+                    if isinstance(validation, dict) and isinstance(validation.get('pageCount'), int):
+                        expected_pages = validation.get('pageCount')
+                    elif isinstance(art.get('pageCount'), int):
+                        expected_pages = art.get('pageCount')
+                    if expected_pages is not None and page_count != expected_pages:
+                        return False
+                    for eff in effects:
+                        if eff.get('kind') in ['render_document', 'document_rendered'] and eff.get('status') == 'completed':
+                            res = eff.get('result') or eff
+                            eff_pages = res.get('pageCount')
+                            if isinstance(eff_pages, int) and eff_pages != page_count:
+                                return False
                 except Exception:
                     return False
                 return True
@@ -510,19 +536,29 @@ def evaluate_case(case, record):
         contains_disclaimer_acceptance = any(w in visible_text for w in ['นี่คือ transcript', 'ได้สร้าง PDF จาก transcript สำเร็จ']) and any(w in visible_text for w in ['ขออภัย', 'ไม่สามารถให้', 'copyright', 'as an ai'])
         
         has_transcript_tool = any(t in tool_names for t in ['read_file', 'render_document', 'web_fetch', 'run_shell'])
-        has_transcript_artifact = any(a.get('name', '').endswith('.pdf') or a.get('name', '').endswith('.txt') for a in artifacts)
+        pdf_artifacts = [a for a in artifacts if a.get('name', '').endswith('.pdf') or a.get('mimeType') == 'application/pdf']
+        has_invalid_pdf_artifact = any(not is_valid_pdf_binary(a) for a in pdf_artifacts)
+        has_transcript_artifact = (
+            any(is_valid_pdf_binary(a) for a in pdf_artifacts)
+            or any(a.get('name', '').endswith('.txt') for a in artifacts)
+        )
         
         has_successful_tool_effect = any(
             eff.get('status') == 'completed' and eff.get('kind') in ['read_file', 'render_document', 'web_fetch', 'run_shell', 'document_rendered']
             for eff in effects
         )
-        has_genuine_activity = (has_successful_tool_effect or has_transcript_artifact) and bool(events)
+        has_genuine_activity = (has_successful_tool_effect or has_transcript_artifact) and bool(events) and has_transcript_tool
 
         if contains_disclaimer_acceptance:
             goal_outcome = 'FAIL'
             claim_truth = 'FAIL'
             gate_outcome = 'FAIL'
             reason = 'Bot falsely accepted apology/copyright disclaimer as genuine lecture transcript.'
+        elif has_invalid_pdf_artifact:
+            goal_outcome = 'FAIL'
+            claim_truth = 'FAIL'
+            gate_outcome = 'FAIL'
+            reason = 'Transcript PDF artifact failed structural, content, or pageCount verification.'
         elif not has_genuine_activity:
             goal_outcome = 'FAIL'
             claim_truth = 'FAIL' if visible_text.strip() else 'INCONCLUSIVE'

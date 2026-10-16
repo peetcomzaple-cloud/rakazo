@@ -55,12 +55,12 @@ export function extractExplicitRecipientTarget(prompt: string): ExplicitDraftTar
     // Multi-word name in Thai: ให้ <name> ที่ <email> or ร่างอีเมลให้ <name> ที่ <email>
     let name: string | undefined;
     const thaiNameMatch = segmentBefore.match(/(?:ให้|ร่างอีเมลให้|ส่งให้)\s+([A-Za-zก-๙0-9_.\s]+?)\s+ที่\s*$/);
-    if (thaiNameMatch) {
+    if (thaiNameMatch?.[1]) {
       name = thaiNameMatch[1].trim();
     }
     // Multi-word name in English: to <name> at <email> or draft to <name> at <email>
     const engNameMatch = segmentBefore.match(/(?:\bto|\bdraft to)\s+([A-Za-z0-9_.\s]+?)\s+at\s*$/i);
-    if (engNameMatch) {
+    if (engNameMatch?.[1]) {
       name = engNameMatch[1].trim();
     }
 
@@ -77,16 +77,18 @@ export function extractExplicitRecipientTarget(prompt: string): ExplicitDraftTar
   const correctionIndex = candidates.findIndex((c) => c.isCorrection);
   if (correctionIndex !== -1) {
     for (let i = 0; i < correctionIndex; i++) {
-      candidates[i].negated = true;
+      const prior = candidates[i];
+      if (prior) prior.negated = true;
     }
   }
 
   // Also check if any candidate's name or order was explicitly cancelled in the prompt
+  const firstEmailIndex = emails[0]?.index;
   for (const c of candidates) {
     if (c.name && new RegExp(`(?:ยกเลิก\\s*${c.name}|${c.name}\\s*ยกเลิกแล้ว|cancel(?:led)?\\s*${c.name}|${c.name}\\s*is\\s*cancel(?:led)?)`, "i").test(prompt)) {
       c.negated = true;
     }
-    if (c.index === emails[0].index && /ผู้รับตามคำสั่งแรกยกเลิกแล้ว|คำสั่งแรกยกเลิก/i.test(prompt)) {
+    if (firstEmailIndex !== undefined && c.index === firstEmailIndex && /ผู้รับตามคำสั่งแรกยกเลิกแล้ว|คำสั่งแรกยกเลิก/i.test(prompt)) {
       c.negated = true;
     }
   }
@@ -96,6 +98,7 @@ export function extractExplicitRecipientTarget(prompt: string): ExplicitDraftTar
 
   // Prefer correction if present, otherwise latest valid candidate
   const chosen = valid.find((c) => c.isCorrection) ?? valid[valid.length - 1];
+  if (!chosen) return undefined;
 
   return {
     name: chosen.name,

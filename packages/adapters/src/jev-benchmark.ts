@@ -48,7 +48,13 @@ export interface JevCaseResultsPayload {
 }
 
 function makeCtx(signal?: AbortSignal): AdapterContext {
-  return { signal: signal ?? new AbortController().signal };
+  return {
+    operationId: "jev-bench-op",
+    traceId: "jev-bench-trace",
+    spaceId: "space-bench",
+    userId: "user-bench",
+    signal: signal ?? new AbortController().signal,
+  };
 }
 
 function makeComp(fence = 1): ComputerRef {

@@ -173,4 +173,131 @@ describe("browser failure recovery", () => {
       expect(uncertain.blockedResult("browser_act")?.uncertain).toBe(true);
     });
   });
+
+  describe("main-document HTTP status and scoped storage recovery", () => {
+    it("classifies HTTP 400 and allows a single scoped browser_clear_origin_storage attempt before retrying", () => {
+      const http400 = {
+        ok: false,
+        url: "https://portal.example.test/dashboard",
+        title: "400 Bad Request",
+        httpStatus: 400,
+        httpStatusStatus: "known",
+        errorCode: "FLOW_STATE_INVALID",
+        errorKind: "flow_state_invalid",
+        retryable: true,
+        error: "HTTP 400 on https://portal.example.test/dashboard",
+      };
+      const recovery = new BrowserRecovery([
+        { kind: "browser_navigate", result: http400 },
+      ]);
+      expect(recovery.unresolvedResult()).toMatchObject({
+        errorCode: "FLOW_STATE_INVALID",
+        httpStatus: 400,
+        httpStatusStatus: "known",
+      });
+      // First clear_origin_storage is allowed
+      expect(
+        recovery.blockedResult("browser_clear_origin_storage", {
+          origin: "https://portal.example.test",
+        }),
+      ).toBeUndefined();
+
+      recovery.record("browser_clear_origin_storage", {
+        ok: true,
+        origin: "https://portal.example.test",
+        clearedStorageTypes: ["cookies", "local_storage"],
+      });
+      // Second clear_origin_storage in the same failure cycle is blocked to prevent loops
+      expect(
+        recovery.blockedResult("browser_clear_origin_storage", {
+          origin: "https://portal.example.test",
+        }),
+      ).toMatchObject({
+        ok: false,
+        retryable: false,
+      });
+
+      // Retrying navigate after clearing storage is allowed once
+      expect(
+        recovery.blockedResult("browser_navigate", {
+          url: "https://portal.example.test/dashboard",
+        }),
+      ).toBeUndefined();
+    });
+
+    it("classifies HTTP 429 with Retry-After and HTTP 401/403/5xx/challenge", () => {
+      const recovery429 = new BrowserRecovery([
+        {
+          kind: "browser_navigate",
+          result: {
+            ok: false,
+            url: "https://api.example.test/items",
+            httpStatus: 429,
+            httpStatusStatus: "known",
+            retryAfterMs: 30_000,
+          },
+        },
+      ]);
+      expect(recovery429.unresolvedResult()).toMatchObject({
+        errorCode: "HTTP_429",
+        errorKind: "rate_limited",
+        httpStatus: 429,
+        retryAfterMs: 30_000,
+        retryable: true,
+      });
+
+      const recovery403Challenge = new BrowserRecovery([
+        {
+          kind: "browser_navigate",
+          result: {
+            ok: false,
+            url: "https://secure.example.test/login",
+            httpStatus: 403,
+            httpStatusStatus: "known",
+            challengeDetected: true,
+          },
+        },
+      ]);
+      expect(recovery403Challenge.unresolvedResult()).toMatchObject({
+        errorCode: "CHALLENGE_DETECTED",
+        errorKind: "challenge",
+        httpStatus: 403,
+        retryable: false,
+      });
+
+      const recovery503 = new BrowserRecovery([
+        {
+          kind: "browser_navigate",
+          result: {
+            ok: false,
+            url: "https://service.example.test/",
+            httpStatus: 503,
+            httpStatusStatus: "known",
+          },
+        },
+      ]);
+      expect(recovery503.unresolvedResult()).toMatchObject({
+        errorCode: "HTTP_503",
+        errorKind: "server_error",
+        httpStatus: 503,
+        retryable: true,
+      });
+    });
+
+    it("does not fabricate HTTP failure when httpStatusStatus is unknown and ok is true", () => {
+      const recovery = new BrowserRecovery([
+        {
+          kind: "browser_navigate",
+          result: {
+            ok: true,
+            url: "https://spa.example.test/app",
+            title: "SPA App",
+            httpStatusStatus: "unknown",
+          },
+        },
+      ]);
+      expect(recovery.unresolvedResult()).toBeUndefined();
+      expect(recovery.blockedResult("browser_act")).toBeUndefined();
+    });
+  });
 });

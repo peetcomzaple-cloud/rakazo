@@ -1,0 +1,63 @@
+--- a/infra/sandboxes/supervisor/src/index.ts
++++ b/infra/sandboxes/supervisor/src/index.ts
+@@ -242,8 +242,8 @@
+         let container: Docker.Container | undefined;
+         try {
+           if (existing) {
+-            await existing.remove({ force: true }).catch(() => undefined);
++            await existing.remove({ force: true }).catch(() => {});
+           }
+           container = await docker.createContainer(
+             containerCreateOptions({
+@@ -896,8 +896,8 @@
+       return c.json({ ok: true });
+     }
+
+-    if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id"))) {
++    if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id") ?? "")) {
+       throw new ComputerIdentityError("computer identity mismatch");
+     }
+
+@@ -957,8 +957,8 @@
+       return c.json({ ok: true });
+     }
+
+-    if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id"))) {
++    if (!isRakazoContainer(info, botId, c.req.header("x-rakazo-space-id") ?? "")) {
+       throw new ComputerIdentityError("computer identity mismatch");
+     }
+
+@@ -1071,8 +1071,8 @@
+   await imageReady;
+ }
+
+-async function findBotContainer(botId: string, spaceId: string) {
++async function findBotContainer(botId: string, spaceId: string): Promise<Docker.Container | undefined> {
+   const listed = await docker.listContainers({
+     all: true,
+   });
+@@ -1124,8 +1124,8 @@
+ class ComputerIdentityError extends Error {}
+
+-async function managedContainer(id: string, botId?: string, spaceId?: string) {
++async function managedContainer(id: string, botId?: string, spaceId?: string | undefined) {
+   if (!botId || !spaceId) throw new ComputerIdentityError("missing computer identity");
+   const container = docker.getContainer(id);
+   const info = await container.inspect();
+@@ -1202,8 +1202,8 @@
+   };
+ }
+
+-function isRakazoContainer(info: Docker.ContainerInspectInfo, botId: string, spaceId: string) {
++function isRakazoContainer(info: Docker.ContainerInspectInfo, botId: string, spaceId: string | undefined) {
+   if (info.Name === "/rakazo-computer") return true;
+   const labels = info.Config.Labels ?? {};
+   const managed = labels["rakazo.managed"] === "true" || info.Config.Image === COMPUTER_IMAGE;
+
+--- a/infra/sandboxes/supervisor/src/index.test.ts
++++ b/infra/sandboxes/supervisor/src/index.test.ts
+@@ -949,8 +949,6 @@
+     expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
+   });
+-  });
+ });

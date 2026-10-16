@@ -80,6 +80,7 @@ import {
   sandboxCommandTimedOut,
   sandboxTimeoutCommand,
   screenReleaseStopCommand,
+  shellQuote,
   shouldReplayComputerActions,
   stopExtraScreenCommand,
   teardownReleasedScreen,
@@ -108,6 +109,7 @@ const teamScreenLimit = resolveTeamScreenLimit();
 // IPs, so computer control must use a published loopback port instead.
 const controlViaLoopback = process.env.SANDBOX_CONTROL_VIA_LOOPBACK === "true";
 const computerScreens = new Map<string, Map<string, ScreenAssignment>>();
+const computerScreenGenerations = new Map<string, Map<string, number>>();
 
 export const MAX_SUPERVISOR_REQUEST_BYTES = 1024 * 1024;
 export const MAX_SUPERVISOR_FILE_REQUEST_BYTES = 16 * 1024 * 1024 + 64 * 1024;
@@ -212,7 +214,7 @@ app.post("/computers", async (c) => {
       // Lock order is always bot → space; never take a bot lock while holding a space lock.
       const spaceComputerLimit = resolveSpaceComputerLimit();
       const createComputer = async () => {
-        if (!existing && spaceComputerLimit > 0) {
+        if (spaceComputerLimit > 0) {
           const currentCount = await countSpaceContainers(body.spaceId);
           if (currentCount >= spaceComputerLimit) {
             return c.json(
@@ -242,9 +244,6 @@ app.post("/computers", async (c) => {
             : await ensureBotNetwork(body.botId, networkOwner);
         let container: Docker.Container | undefined;
         try {
-          if (existing) {
-            await existing.remove({ force: true }).catch(() => undefined);
-          }
           container = await docker.createContainer(
             containerCreateOptions({
               name,
@@ -1213,6 +1212,8 @@ async function ensureManagedScreen(
     computerScreens.set(id, assigned);
   }
   const screenKey = screenId || botId || id;
+  const existingAssignment = assigned.get(screenKey);
+  const wasActiveAssignment = Boolean(existingAssignment && !existingAssignment.releasing);
   const index = nextScreenIndex(assigned, screenKey, screenLeaseId, teamScreenLimit);
   const layout = screenPorts(index);
   const slot = assigned.get(screenKey)!;
@@ -1237,6 +1238,15 @@ async function ensureManagedScreen(
     const detail = [ensured.stderr, browserLog.stdout].filter(Boolean).join("\n").trim();
     throw new Error(detail || `computer screen ${layout.display} failed to start`);
   }
+  let generations = computerScreenGenerations.get(id);
+  if (!generations) {
+    generations = new Map();
+    computerScreenGenerations.set(id, generations);
+  }
+  const generation = wasActiveAssignment
+    ? (generations.get(screenKey) ?? 1)
+    : (generations.get(screenKey) ?? 0) + 1;
+  generations.set(screenKey, generation);
   const browserProfile = browserProfilePathForScreen(screenKey);
   const effectiveLeaseId = slot.leaseId ?? screenLeaseId;
   const parsedFence = effectiveLeaseId?.includes(":")
@@ -1247,7 +1257,7 @@ async function ensureManagedScreen(
     ...(botId ? { botId } : {}),
     screenId: screenKey,
     display: layout.display,
-    generation: 1,
+    generation,
     profile: browserProfile,
     profileFingerprint: path.posix.basename(browserProfile),
     ...(effectiveLeaseId ? { leaseId: effectiveLeaseId } : {}),
@@ -1267,8 +1277,13 @@ async function ensureManagedScreen(
   };
 }
 
-function isRakazoContainer(info: Docker.ContainerInspectInfo, botId: string, spaceId: string) {
+function isRakazoContainer(
+  info: Docker.ContainerInspectInfo,
+  botId: string | undefined,
+  spaceId: string | undefined,
+) {
   if (info.Name === "/rakazo-computer") return true;
+  if (!botId || !spaceId) return false;
   const labels = info.Config.Labels ?? {};
   const managed = labels["rakazo.managed"] === "true" || info.Config.Image === COMPUTER_IMAGE;
   return managed && hasComputerIdentity(labels, botId, spaceId);
@@ -1879,8 +1894,9 @@ async function observeContainer(
   browserProfile?: string,
 ) {
   const inventoryPy = [
-    "import datetime, json, os, subprocess, sys",
-    "prof = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None",
+    "import datetime, json, os, posixpath, subprocess, sys",
+    "prof = posixpath.normpath(sys.argv[1].strip()) if len(sys.argv) > 1 and sys.argv[1].strip() else None",
+    "if prof == '.': prof = None",
     "ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')",
     "print('INVENTORY_TS ' + ts)",
     "try:",
@@ -1903,16 +1919,19 @@ async function observeContainer(
     "    if not wid or wid in seen: continue",
     "    seen.add(wid)",
     "    pid = int(parts[2]) if parts[2].isdigit() and int(parts[2]) > 0 else None",
-    "    cur = True",
-    "    if prof:",
-    "      cur = False",
-    "      if pid:",
-    "        try:",
-    "          cmd = open(f'/proc/{pid}/cmdline', 'rb').read().decode('utf-8', 'replace')",
-    "          flag = f'--user-data-dir={prof}'",
-    "          cur = (flag in cmd.split('\\0')) or (f' {flag} ' in f' {cmd.replace(chr(0), \" \")} ') or ('--user-data-dir=' not in cmd)",
-    "        except Exception:",
-    "          cur = False",
+    "    cur = False",
+    "    if prof and pid:",
+    "      try:",
+    "        args = [a for a in open(f'/proc/{pid}/cmdline', 'rb').read().decode('utf-8', 'replace').split('\\0') if a]",
+    "        for i, a in enumerate(args):",
+    "          if a.startswith('--user-data-dir='):",
+    "            v = a.split('=', 1)[1].strip()",
+    "            if v and posixpath.normpath(v) == prof: cur = True; break",
+    "          elif a == '--user-data-dir' and i + 1 < len(args):",
+    "            v = args[i + 1].strip()",
+    "            if v and posixpath.normpath(v) == prof: cur = True; break",
+    "      except Exception:",
+    "        cur = False",
     "    w = {'id': wid, 'wmClass': parts[3], 'isCurrentProfile': cur}",
     "    if pid is not None: w['pid'] = pid",
     "    if len(parts) >= 6 and parts[5].strip(): w['title'] = parts[5].strip()",

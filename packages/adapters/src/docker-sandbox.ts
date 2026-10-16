@@ -383,7 +383,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     },
   ): ComputerObservation {
     const screenId = context.botId ?? computer.botId;
-    const display = raw.display ?? raw.screenIdentity?.display ?? ":1";
+    const display = raw.display ?? raw.screenIdentity?.display;
     const parsedFence = context.screenLeaseId?.includes(":")
       ? Number(context.screenLeaseId.slice(context.screenLeaseId.lastIndexOf(":") + 1))
       : undefined;
@@ -392,28 +392,22 @@ export class DockerSandboxProvider implements SandboxProvider {
       (parsedFence !== undefined && Number.isSafeInteger(parsedFence) && parsedFence >= 0
         ? parsedFence
         : undefined);
-    const screenIdentity: NonNullable<ComputerObservation["screenIdentity"]> = {
-      ...raw.screenIdentity,
-      computerId: raw.screenIdentity?.computerId ?? computer.id,
-      botId: raw.screenIdentity?.botId ?? computer.botId,
-      screenId: raw.screenIdentity?.screenId ?? screenId,
-      display,
-      generation:
-        typeof raw.screenIdentity?.generation === "number" &&
-        Number.isSafeInteger(raw.screenIdentity.generation) &&
-        raw.screenIdentity.generation >= 0
-          ? raw.screenIdentity.generation
-          : 1,
-      profileFingerprint: raw.screenIdentity?.profileFingerprint ?? screenId,
-      ...(raw.screenIdentity?.profile ? { profile: raw.screenIdentity.profile } : {}),
-      ...(context.runId ?? raw.screenIdentity?.runId
-        ? { runId: context.runId ?? raw.screenIdentity?.runId }
-        : {}),
-      ...(context.screenLeaseId ?? raw.screenIdentity?.leaseId
-        ? { leaseId: context.screenLeaseId ?? raw.screenIdentity?.leaseId }
-        : {}),
-      ...(fence !== undefined ? { fence } : {}),
-    };
+    const screenIdentity: ComputerObservation["screenIdentity"] = raw.screenIdentity
+      ? {
+          ...raw.screenIdentity,
+          computerId: raw.screenIdentity.computerId ?? computer.id,
+          botId: raw.screenIdentity.botId ?? computer.botId,
+          screenId: raw.screenIdentity.screenId ?? screenId,
+          ...(display ? { display } : {}),
+          ...(context.runId ?? raw.screenIdentity.runId
+            ? { runId: context.runId ?? raw.screenIdentity.runId }
+            : {}),
+          ...(context.screenLeaseId ?? raw.screenIdentity.leaseId
+            ? { leaseId: context.screenLeaseId ?? raw.screenIdentity.leaseId }
+            : {}),
+          ...(fence !== undefined ? { fence } : {}),
+        }
+      : undefined;
     return computerObservation(Uint8Array.from(Buffer.from(raw.image, "base64")), {
       mimeType: raw.mimeType,
       width: raw.width,
@@ -422,8 +416,8 @@ export class DockerSandboxProvider implements SandboxProvider {
       ...(raw.capturedAt ? { capturedAt: raw.capturedAt } : {}),
       cursor: raw.cursor,
       activeWindow: raw.activeWindow,
-      display,
-      screenIdentity,
+      ...(display ? { display } : {}),
+      ...(screenIdentity ? { screenIdentity } : {}),
       ...(raw.windowInventoryStatus ? { windowInventoryStatus: raw.windowInventoryStatus } : {}),
       ...(raw.windowInventoryFreshness
         ? { windowInventoryFreshness: raw.windowInventoryFreshness }

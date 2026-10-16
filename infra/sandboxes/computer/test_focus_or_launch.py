@@ -327,6 +327,33 @@ class ControlArgvTest(unittest.TestCase):
             },
         )
 
+    def test_cmdline_matches_profile_parses_nul_argv_and_normalizes_paths(self):
+        self.assertTrue(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir={PROFILE}/\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertTrue(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir\0{PROFILE}/./\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(
+            control.cmdline_matches_profile(
+                f"chromium\0--user-data-dir={PROFILE}-other\0about:blank\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(
+            control.cmdline_matches_profile(
+                "xterm\0-title\0Terminal\0",
+                PROFILE,
+            )
+        )
+        self.assertFalse(control.cmdline_matches_profile(f"chromium\0--user-data-dir={PROFILE}\0", None))
+
 
 class ScriptTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc process arguments")

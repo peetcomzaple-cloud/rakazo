@@ -37,20 +37,9 @@ export function computerObservation(
     typeof input.capturedAt === "string" && Number.isFinite(Date.parse(input.capturedAt))
       ? input.capturedAt
       : new Date().toISOString();
-  const capturedMs = Date.parse(capturedAt);
-  const freshnessMs = input.windowInventoryFreshness
-    ? Date.parse(input.windowInventoryFreshness)
-    : Number.NaN;
-  const windowInventoryFreshness =
-    input.windowInventoryFreshness && Number.isFinite(freshnessMs)
-      ? freshnessMs > capturedMs
-        ? capturedAt
-        : input.windowInventoryFreshness
-      : input.windowInventoryFreshness;
   const imageHash = createHash("sha256").update(image).digest("hex");
   return {
     ...input,
-    ...(windowInventoryFreshness !== undefined ? { windowInventoryFreshness } : {}),
     image,
     frameId:
       typeof input.frameId === "string" && input.frameId.length > 0

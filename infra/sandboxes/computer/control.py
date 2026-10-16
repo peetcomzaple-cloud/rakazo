@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hmac
 import json
 import os
+import posixpath
 import re
 import subprocess
 import threading
@@ -283,23 +284,36 @@ def resolve_browser_profile(display, browser_profile=None):
     return None
 
 
-def window_matches_profile(pid_int, browser_profile):
+def cmdline_matches_profile(raw_cmdline, browser_profile):
     if not browser_profile:
-        return True
-    if not pid_int or pid_int <= 0:
+        return False
+    target = posixpath.normpath(browser_profile.strip())
+    if not target or target == ".":
+        return False
+    if isinstance(raw_cmdline, bytes):
+        raw_cmdline = raw_cmdline.decode("utf-8", "replace")
+    args = [arg for arg in raw_cmdline.split("\0") if arg]
+    for index, arg in enumerate(args):
+        if arg.startswith("--user-data-dir="):
+            value = arg.split("=", 1)[1].strip()
+            if value and posixpath.normpath(value) == target:
+                return True
+        elif arg == "--user-data-dir" and index + 1 < len(args):
+            value = args[index + 1].strip()
+            if value and posixpath.normpath(value) == target:
+                return True
+    return False
+
+
+def window_matches_profile(pid_int, browser_profile):
+    if not browser_profile or not pid_int or pid_int <= 0:
         return False
     try:
         with open(f"/proc/{pid_int}/cmdline", "rb") as handle:
-            raw = handle.read().decode("utf-8", "replace")
+            raw = handle.read()
     except OSError:
         return False
-    flag = f"--user-data-dir={browser_profile}"
-    lines = [line for line in raw.split("\0") if line]
-    if flag in lines or f" {flag} " in f" {raw.replace(chr(0), ' ')} ":
-        return True
-    if "--user-data-dir=" in raw:
-        return False
-    return True
+    return cmdline_matches_profile(raw, browser_profile)
 
 
 def collect_window_inventory(env, browser_profile=None):

@@ -18,9 +18,15 @@
 
 This delivery integrates the Codex computer evidence patch (`CODEX_COMPUTER_EVIDENCE_FIX.patch`) and resolves findings **D01 through D07** from `ANTIGRAVITY_DELIVERY_REVIEW.md` and `ARGON_NEXT_IMPLEMENTATION.md` + `ARGON_IMPLEMENTATION_ADDENDUM.md`:
 
-- **Adapters TypeScript Typecheck (`D01`):** `tsc --project packages/adapters/tsconfig.json --noEmit --incremental false` now exits with **code `0` (0 errors, down from 118 diagnostic lines)**.
-- **Targeted Vitest Suites (`packages/adapters` — 15 test files):** **177 / 177 tests passed (0 failures)**, including `computer-evidence-boundaries.test.ts` (34 tests), `computer-tools.test.ts` (9 tests), `computer-browser.test.ts` (14 tests), `browser-tools.test.ts` (18 tests), `browser-recovery.test.ts` (14 tests), `computer-coordinate-bounds.test.ts` (16 tests), `round3-screen-lifecycle.test.ts` (15 tests), and Round 2/4 suites.
-- **Sandbox Page-Browser Python Unit Tests (`D03`, `D04`):** `infra/sandboxes/computer/test_page_browser.py` — **20 / 20 tests passed**, covering main-document CDP HTTP status tracking, unknown status preservation, subresource 403 isolation, redirect chain final status, and `clear-origin-storage` target/origin scoping.
+- **Adapters & Supervisor TypeScript Typecheck (`D01`):**
+  - `tsc --project packages/adapters/tsconfig.json --noEmit --incremental false` exits with **code `0` (0 errors, down from 118 diagnostic lines)**.
+  - `tsc --project infra/sandboxes/supervisor/tsconfig.json --noEmit --incremental false` exits with **code `0` (0 errors, down from 6 diagnostic lines)**.
+- **Targeted Vitest Suites (`packages/adapters` & `infra/sandboxes/supervisor`):**
+  - `packages/adapters` (16 test files including `docker-sandbox.test.ts`): **204 / 204 tests passed (0 failures)**.
+  - `infra/sandboxes/supervisor/src/index.test.ts` & `page-browser-route.test.ts`: **59 passed, 1 skipped on Windows (0 failures)**.
+- **Sandbox Page-Browser & Control Python Unit Tests (`D02`, `D03`, `D04`):**
+  - `infra/sandboxes/computer/test_page_browser.py` — **20 / 20 tests passed**.
+  - `infra/sandboxes/computer/test_focus_or_launch.py` — **22 passed, 3 skipped on Windows (0 failures)**, including NUL-separated `/proc/{pid}/cmdline` `--user-data-dir` parsing with `posixpath.normpath`.
 - **Python Grader Invariant Suite (`D06`):** `work/d-r3-20261014/test_grader_invariants.py` (tested with `pypdf 6.10.0`) — **6/6 Codex mutations rejected, 8/8 D negative mutations rejected (including blank 10-page PDF and pageCount mismatch), and 6/6 positive cases accepted** using real content-bearing 1-page (`doc-pdf`) and 2-page (`doc-transcript`) PDF binaries with extractable text, exact SHA-256 hashes, and matching `pageCount`.
 - **Independent Adversarial Mutation Probe:** `work/after-d-r4-20261014/probe-new-mutations.py` — **10 / 10 mutations rejected (`falsePositiveCount: 0`)**.
 - **Explicit Non-Claims (`NOT_TESTED` / `ENVIRONMENT_BLOCKED` in this local Windows pass):**
@@ -33,8 +39,8 @@ This delivery integrates the Codex computer evidence patch (`CODEX_COMPUTER_EVID
 
 | ID / Area | Requirement Summary | Status | Implementation & Verification Evidence |
 | :--- | :--- | :--- | :--- |
-| **D01** | Resolve `packages/adapters` `tsc --noEmit` diagnostics (118 lines -> 0) and wire missing exports in `executor.ts` | **IMPLEMENTED & VERIFIED** | Exported `isBrowserNoOp`, `isBrowserPreDispatchFailure`, `isBrowserUncertain`, `browserClearOriginStorageFromTool` in `browser-tools.ts`; exported `ToolCallStreakWithOutput` and `ExtendedToolCallStreak` in `tool-loop.ts`; exported `messageToAgentHistoryText` in `output-contract.ts`; aligned `AgentRunRequest` (`packages/adapter-kit`) and `FinalizeRunInput` (`packages/db`). Verified: `tsc --project packages/adapters/tsconfig.json --noEmit --incremental false` exits `0`. |
-| **D02** | Window close verification (`verifyWindowCloseEvidence`): enforce `requireFocusProof`, `activeWindowBefore`, `screenIdentity`, `generation`, `display`, `profileFingerprint`, `runId`, `leaseId`, `fence`, `windowInventoryFreshness`, target `isCurrentProfile === true`, and surviving window `id`/`pid`/`wmClass`/`isCurrentProfile` | **IMPLEMENTED & VERIFIED** | Implemented in `packages/adapters/src/computer-tools.ts`, `computer-support.ts`, `docker-sandbox.ts`, and `infra/sandboxes/computer/control.py`. Verified by 34 tests in `computer-evidence-boundaries.test.ts` (including end-to-end `DockerSandboxProvider` observe/act wiring) and 15 tests in `round3-screen-lifecycle.test.ts`. |
+| **D01** | Resolve `packages/adapters` and `infra/sandboxes/supervisor` `tsc --noEmit` diagnostics to `0` and wire missing exports in `executor.ts` / `supervisor` | **IMPLEMENTED & VERIFIED** | Exported `isBrowserNoOp`, `isBrowserPreDispatchFailure`, `isBrowserUncertain`, `browserClearOriginStorageFromTool` in `browser-tools.ts`; exported `ToolCallStreakWithOutput` and `ExtendedToolCallStreak` in `tool-loop.ts`; exported `messageToAgentHistoryText` in `output-contract.ts`; re-exported `shellQuote` in `supervisor-logic.ts` and fixed unreachable container branch / optional header types in `supervisor/src/index.ts`. Verified: both `packages/adapters` and `infra/sandboxes/supervisor` `tsc --noEmit` exit `0`. |
+| **D02** | Window close verification (`verifyWindowCloseEvidence`): enforce `requireFocusProof`, `activeWindowBefore`, `screenIdentity`, monotonic `generation`, `display`, `profileFingerprint`, `runId`, `leaseId`, `fence`, un-clamped `windowInventoryFreshness`, strict NUL-separated `/proc/{pid}/cmdline` `isCurrentProfile === true`, and surviving window `id`/`pid`/`wmClass`/`isCurrentProfile` without fabricating fallback metadata | **IMPLEMENTED & VERIFIED** | Implemented in `packages/adapters/src/computer-tools.ts`, `computer-support.ts`, `docker-sandbox.ts`, `infra/sandboxes/supervisor/src/index.ts`, and `infra/sandboxes/computer/control.py`. Verified by 34 tests in `computer-evidence-boundaries.test.ts`, 15 tests in `round3-screen-lifecycle.test.ts`, 25 tests in `test_focus_or_launch.py`, and 16 characterization probes. |
 | **D03** | Main-document HTTP status evidence: never default missing status to `200`; separate `"known"` vs `"unknown"`; bind CDP `Network.responseReceived` (`type === "Document"`) to `Page.frameNavigated` `frameId`/`loaderId`; ignore subresource 403s; detect HTTP 200 challenge pages | **IMPLEMENTED & VERIFIED** | Implemented in `infra/sandboxes/computer/rakazo-page-browser` (`_run_with_network_tracking`, `navigate`, `page_info`), `computer-browser.ts`, `browser-tools.ts`, and `browser-recovery.ts`. Verified in `test_page_browser.py` (20/20) and `computer-browser.test.ts` + `browser-tools.test.ts` + `browser-recovery.test.ts` (46/46). |
 | **D04 (Browser)** | Callable end-to-end scoped origin storage recovery (`browser_clear_origin_storage`) without global cookie wipe or invalid `session_storage` CDP StorageType; bounded to once per failure cycle; never triggered on HTTP 429 | **IMPLEMENTED & VERIFIED** | Added `clearOriginStorage` across `adapter-kit`, `computer-browser.ts`, `browser-tools.ts`, `executor.ts`, `browser-recovery.ts`, and `rakazo-page-browser` (`Storage.clearDataForOrigin` with `cookies,local_storage,indexeddb,cache_storage` + domain/path-matched `Network.deleteCookies`). Verified in `test_page_browser.py`, `computer-browser.test.ts`, `browser-tools.test.ts`, and `browser-recovery.test.ts`. |
 | **D04 (Computer VM/OS)** | Map VM01–VM12 / OS01–OS12 capabilities: window inventory/close proof, display/profile identity, process-group stop/kill, output bounding | **EXISTING & PARTIALLY VERIFIED (HOST-LIMITED)** | VM window inventory, `screenIdentity`, generation/lease fencing, and coordinate safety are verified in `computer-evidence-boundaries.test.ts` and `round3-screen-lifecycle.test.ts`. Linux-native process-group (`killpg`), `/proc`, and Xvfb/openbox runtime behaviors are `NOT_TESTED` on the Windows host and require Linux container execution in Jules QA. |
@@ -48,13 +54,14 @@ This delivery integrates the Codex computer evidence patch (`CODEX_COMPUTER_EVID
 
 ## 3. Exact Verification Commands & Machine-Verifiable Results
 
-### 3.1 Adapters TypeScript Typecheck (`D01`)
-**Command:**
+### 3.1 Adapters & Supervisor TypeScript Typecheck (`D01`)
+**Commands:**
 ```powershell
 node node_modules/typescript/bin/tsc --project packages/adapters/tsconfig.json --noEmit --incremental false
+node node_modules/typescript/bin/tsc --project infra/sandboxes/supervisor/tsconfig.json --noEmit --incremental false
 ```
 **Result:**
-- Exit code: **`0`** (`0` errors, `0` warnings).
+- Both commands exit with code **`0`** (`0` errors, `0` warnings).
 
 ### 3.2 Vitest Targeted Suites (`packages/adapters` — 15 Files)
 **Command:**

@@ -13,6 +13,7 @@ export {
   interactiveScreenCommand,
   prepareBrowserProfileCommand,
   quiesceBrowserProfilesCommand,
+  shellQuote,
   stopBrowserCommand,
   stopExtraScreenCommand,
   terminalCommand,

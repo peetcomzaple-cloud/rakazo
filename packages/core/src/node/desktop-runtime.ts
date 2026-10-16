@@ -258,10 +258,44 @@ export function browserCloseProgram() {
 }
 
 export function stopBrowserCommand(screenId: string, env = DEFAULT_DESKTOP_ENV) {
-  return stopBrowserProfileCommand(
-    browserProfilePathForScreen(screenId, env),
-    browserPidPathForScreen(screenId),
-  );
+  const closedMarker = `/tmp/rakazo/browser-closed-${browserKeyForScreen(screenId)}`;
+  return [
+    `touch ${closedMarker}`,
+    stopBrowserProfileCommand(
+      browserProfilePathForScreen(screenId, env),
+      browserPidPathForScreen(screenId),
+    ),
+  ].join("\n");
+}
+
+export function launchBrowserCommand(
+  index: number,
+  screenId: string,
+  env = DEFAULT_DESKTOP_ENV,
+) {
+  const displayNumber = 1 + index;
+  const debugPort = 9221 + displayNumber;
+  const profile = browserProfilePathForScreen(screenId, env);
+  const pidFile = browserPidPathForScreen(screenId);
+  const log = `/tmp/rakazo/screen-${displayNumber}`;
+  const launcher = `/tmp/rakazo/browser-launch-${displayNumber}`;
+  return [
+    "set -eu",
+    `mkdir -p /tmp/rakazo ${shellQuote(path.posix.dirname(profile))}`,
+    ...browserRunningFunction(profile, pidFile),
+    `printf %s ${shellQuote(profile)} >/tmp/rakazo/browser-profile-${displayNumber}`,
+    "if ! browser_running; then",
+    prepareBrowserProfileCommand(screenId, env),
+    `  rm -f ${shellQuote(profile)}/SingletonLock ${shellQuote(profile)}/SingletonCookie ${shellQuote(profile)}/SingletonSocket`,
+    `  nohup ${launcher} 8>&- 9>&- </dev/null >${log}-browser.log 2>&1 & printf %s "$!" >${pidFile}`,
+    "fi",
+    `for i in $(seq 1 80); do browser_running && (echo >/dev/tcp/127.0.0.1/${debugPort}) >/dev/null 2>&1 && break; sleep 0.25; done`,
+    `if ! browser_running || ! (echo >/dev/tcp/127.0.0.1/${debugPort}) >/dev/null 2>&1; then`,
+    `  echo "computer browser CDP not ready on ${debugPort} (running=$(browser_running && echo yes || echo no))" >&2`,
+    `  tail -c 4000 ${log}-browser.log >&2 || true`,
+    "  exit 1",
+    "fi",
+  ].join("\n");
 }
 
 /** Close one Chromium profile with Browser.close, then SIGTERM, before a checkpoint copies it. */
@@ -562,20 +596,6 @@ function renderEnsureScreenCommand(
     `chmod 700 ${browserLauncherPath(layout.displayNumber)}`,
     ...setupDisplay,
     `xdpyinfo -display ${layout.display} >/dev/null 2>&1 || exit 1`,
-    `mkdir -p /tmp/rakazo ${shellQuote(path.posix.dirname(profile))}`,
-    ...browserRunningFunction(profile, pidFile),
-    `printf %s ${shellQuote(profile)} >/tmp/rakazo/browser-profile-${layout.displayNumber}`,
-    "if ! browser_running; then",
-    prepareBrowserProfileCommand(screenId, env),
-    `  rm -f ${shellQuote(profile)}/SingletonLock ${shellQuote(profile)}/SingletonCookie ${shellQuote(profile)}/SingletonSocket`,
-    `  nohup ${browserLauncherPath(layout.displayNumber)} 8>&- 9>&- </dev/null >${log}-browser.log 2>&1 & printf %s "$!" >${pidFile}`,
-    "fi",
-    `for i in $(seq 1 80); do browser_running && (echo >/dev/tcp/127.0.0.1/${layout.debugPort}) >/dev/null 2>&1 && break; sleep 0.25; done`,
-    `if ! browser_running || ! (echo >/dev/tcp/127.0.0.1/${layout.debugPort}) >/dev/null 2>&1; then`,
-    `  echo "computer browser CDP not ready on ${layout.debugPort} (running=$(browser_running && echo yes || echo no))" >&2`,
-    `  tail -c 4000 ${log}-browser.log >&2 || true`,
-    "  exit 1",
-    "fi",
     ...setupView,
     `for i in $(seq 1 50); do (echo >/dev/tcp/127.0.0.1/${layout.viewPort}) >/dev/null 2>&1 && exit 0; sleep 0.1; done`,
     "exit 1",

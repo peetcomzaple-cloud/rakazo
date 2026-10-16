@@ -53,3 +53,23 @@ export function screenIframeSandbox(url: string | null) {
     return undefined;
   }
 }
+
+export function isSameScreenGeneration(
+  a: { display?: string; generation?: number; computerId?: string } | undefined,
+  b: { display?: string; generation?: number; computerId?: string } | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return (
+    a.display === b.display &&
+    a.generation === b.generation &&
+    a.computerId === b.computerId
+  );
+}
+
+export function sanitizeWebScreenIdentity<T extends Record<string, unknown>>(
+  identity: T | undefined,
+): Omit<T, "viewToken" | "controlToken" | "token"> | undefined {
+  if (!identity || typeof identity !== "object") return undefined;
+  const { viewToken, controlToken, token, ...rest } = identity as Record<string, unknown>;
+  return rest as Omit<T, "viewToken" | "controlToken" | "token">;
+}

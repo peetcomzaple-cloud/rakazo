@@ -342,23 +342,59 @@ def ensure_world(client: CdpClient, session_id: str) -> None:
 
 EVAL_HELPERS = r"""
 (() => {
-  if (window.__rakazoPageBrowser) return true;
+  const HELPER_VERSION = "3.0.0";
+  const existing = window.__rakazoPageBrowser;
+  if (existing) {
+    if (existing._isDispatching) return true;
+    if (existing.version === HELPER_VERSION) return true;
+  }
+
+  if (!window.__rakazoClosedShadows) {
+    window.__rakazoClosedShadows = new WeakSet();
+    const origAttachShadow = Element.prototype.attachShadow;
+    if (origAttachShadow) {
+      Element.prototype.attachShadow = function(init) {
+        if (init && init.mode === "closed") {
+          window.__rakazoClosedShadows.add(this);
+        }
+        return origAttachShadow.call(this, init);
+      };
+    }
+  }
+
+  const loginFilled = (existing && existing._loginFilled) || new WeakSet();
   const refMap = new Map();
-  // Fields holding a saved login: snapshots never report their values, whatever their type.
-  const loginFilled = new WeakSet();
-  // New snapshots/documents never recycle references. Retain exact nodes, not selectors.
+
   function newRef() {
     return `e${Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, "0")).join("")}`;
   }
+
   function visible(el) {
     if (!(el instanceof Element)) return false;
-    const style = window.getComputedStyle(el);
-    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {
       return false;
     }
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
+
+  function isDisabled(el) {
+    let cur = el;
+    while (cur) {
+      if (
+        (cur.hasAttribute && cur.hasAttribute("disabled")) ||
+        (cur.getAttribute && cur.getAttribute("aria-disabled") === "true") ||
+        (cur.matches && cur.matches(":disabled")) ||
+        cur.disabled === true
+      ) {
+        return true;
+      }
+      cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host);
+    }
+    return false;
+  }
+
   function roleOf(el) {
     const explicit = el.getAttribute("role");
     if (explicit) return explicit;
@@ -377,7 +413,19 @@ EVAL_HELPERS = r"""
     if (/^h[1-6]$/.test(tag)) return "heading";
     return tag;
   }
+
   function nameOf(el) {
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const ids = labelledBy.split(/\s+/).filter(Boolean);
+      const root = el.getRootNode ? el.getRootNode() : null;
+      const doc = el.ownerDocument || document;
+      const texts = ids.map(id => {
+        const target = (root && root.getElementById ? root.getElementById(id) : null) || (doc.getElementById ? doc.getElementById(id) : null);
+        return target ? (target.innerText || target.textContent || "").trim() : "";
+      }).filter(Boolean);
+      if (texts.length) return texts.join(" ");
+    }
     return (
       el.getAttribute("aria-label") ||
       Array.from(el.labels || []).map(label => label.textContent).join(" ").trim() ||
@@ -388,6 +436,7 @@ EVAL_HELPERS = r"""
       ""
     );
   }
+
   function isInteractive(el) {
     if (!(el instanceof Element)) return false;
     const tag = el.tagName.toLowerCase();
@@ -404,61 +453,151 @@ EVAL_HELPERS = r"""
     }
     return typeof el.onclick === "function" || el.hasAttribute("tabindex");
   }
-  function formatTree(elements) {
+
+  function formatTree(elements, includeRef = true) {
     if (!elements.length) return "(no interactive elements)";
     return elements
       .map((el) => {
         const value =
           el.value !== undefined && el.value !== "" ? ` value=${JSON.stringify(el.value)}` : "";
-        return `- ${el.role} "${el.name}" [${el.ref}]${value}`;
+        const refStr = includeRef && el.ref ? ` [${el.ref}]` : "";
+        return `- ${el.role} "${el.name}"${refStr}${value}`;
       })
       .join("\n");
   }
-  window.__rakazoPageBrowser = {
-    snapshot() {
-      refMap.clear();
-      const elements = [];
-      for (const el of document.querySelectorAll("body *")) {
+
+  function scanElements() {
+    const rawElements = [];
+    const seen = new Set();
+    const hasFrames = Boolean(document.querySelector("iframe, frame"));
+    let hasClosedShadow = false;
+
+    function walk(root) {
+      const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll("*")) : [];
+      for (const el of nodes) {
+        if (window.__rakazoClosedShadows && window.__rakazoClosedShadows.has(el)) {
+          hasClosedShadow = true;
+        }
+        if (el.shadowRoot) {
+          walk(el.shadowRoot);
+        }
         if (!isInteractive(el) || !visible(el)) continue;
-        const ref = newRef();
-        refMap.set(ref, el);
-        elements.push({
-          ref,
+
+        if (el.shadowRoot && el.shadowRoot.querySelector && el.shadowRoot.querySelector("button, input, a, textarea, select")) {
+          continue;
+        }
+
+        if (seen.has(el)) continue;
+        seen.add(el);
+
+        let name = nameOf(el);
+        const host = el.getRootNode && el.getRootNode().host;
+        if (!name && host) {
+          name = nameOf(host);
+        }
+
+        const disabled = isDisabled(el);
+        rawElements.push({
+          node: el,
           role: roleOf(el),
-          name: String(nameOf(el)).slice(0, 200),
+          name: String(name).slice(0, 200),
           value: el.type === "password" || loginFilled.has(el) ? undefined
             : ["checkbox", "radio"].includes(el.type) ? (el.checked ? "checked" : "unchecked")
             : "value" in el ? String(el.value ?? "").slice(0, 2000) : undefined,
           tag: el.tagName.toLowerCase(),
+          ...(disabled ? { disabled: true } : {}),
         });
-        if (elements.length >= 80) break;
+        if (rawElements.length >= 80) break;
       }
+    }
+
+    walk(document.body || document);
+    return { rawElements, hasFrames, hasClosedShadow };
+  }
+
+  const api = {
+    version: HELPER_VERSION,
+    _loginFilled: loginFilled,
+    _refMap: refMap,
+    _isDispatching: false,
+
+    snapshot() {
+      refMap.clear();
+      const { rawElements, hasFrames, hasClosedShadow } = scanElements();
+      const elements = rawElements.map(item => {
+        const ref = newRef();
+        refMap.set(ref, item.node);
+        const { node, ...rest } = item;
+        return { ref, ...rest };
+      });
+      const coverage = (hasFrames || hasClosedShadow) ? 0.75 : 1.0;
+      let notes = "";
+      if (hasFrames) notes += "\nEmbedded frames require desktop tools.";
+      if (hasClosedShadow) notes += "\nClosed Shadow DOM components require desktop tools.";
+
       return {
         url: location.href,
         title: (document.title || "").slice(0, 200),
         elements,
-        tree: (document.body?.innerText || "").slice(0, 12000) + "\n" + formatTree(elements)
-          + (document.querySelector("iframe,frame") ? "\nEmbedded frames require desktop tools." : ""),
+        tree: (document.body?.innerText || "").slice(0, 12000) + "\n" + formatTree(elements, true) + notes,
+        hasFrames,
+        hasClosedShadow,
+        coverage,
       };
     },
+
+    observe() {
+      const { rawElements, hasFrames, hasClosedShadow } = scanElements();
+      const elements = rawElements.map(item => {
+        const { node, ...rest } = item;
+        return rest;
+      });
+      const coverage = (hasFrames || hasClosedShadow) ? 0.75 : 1.0;
+      let notes = "";
+      if (hasFrames) notes += "\nEmbedded frames require desktop tools.";
+      if (hasClosedShadow) notes += "\nClosed Shadow DOM components require desktop tools.";
+
+      return {
+        url: location.href,
+        title: (document.title || "").slice(0, 200),
+        elements,
+        tree: (document.body?.innerText || "").slice(0, 12000) + "\n" + formatTree(elements, false) + notes,
+        hasFrames,
+        hasClosedShadow,
+        coverage,
+      };
+    },
+
     resolve(ref) {
       const el = refMap.get(String(ref));
       if (!el || !el.isConnected || !visible(el)) return null;
-      if (el.matches(":disabled") || el.getAttribute("aria-disabled") === "true") {
+      if (isDisabled(el)) {
         throw new Error("Element is disabled");
       }
       return el;
     },
+
     click(ref) {
       const el = this.resolve(ref);
       if (!el) throw new Error(`Unknown element ref: ${ref}`);
+
+      if (document.elementFromPoint) {
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const topEl = document.elementFromPoint(cx, cy);
+        if (topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el)) {
+          const desc = `${topEl.tagName.toLowerCase()}${topEl.id ? `#${topEl.id}` : ""}`;
+          throw new Error(`Element is occluded by overlay: ${desc}`);
+        }
+      }
+
       el.focus();
       el.click();
       return { url: location.href, title: (document.title || "").slice(0, 200) };
     },
+
     fill(ref, value, origin) {
-      // Checked in the same evaluation as the fill, so a navigation cannot slip in between.
-      // Private-LAN plain HTTP is not a login target, even when the page origin matches.
       if (origin) {
         let saved = null;
         try { saved = new URL(origin); } catch { /* rejected below */ }
@@ -472,7 +611,6 @@ EVAL_HELPERS = r"""
       const el = this.resolve(ref);
       if (!el) throw new Error(`Unknown element ref: ${ref}`);
       if (el.readOnly) throw new Error("Element is read-only");
-      // A username is an input. Textareas, search boxes, and editable page content stay out.
       if (origin && !(el instanceof HTMLInputElement && ["text", "email", "password", "tel"].includes(el.type))) {
         throw new Error("A saved login can only be typed into a text, email, password, or telephone field.");
       }
@@ -497,16 +635,18 @@ EVAL_HELPERS = r"""
       }
       return { url: location.href, title: (document.title || "").slice(0, 200) };
     },
+
     type(ref, text) {
       const el = this.resolve(ref);
       if (!el) throw new Error(`Unknown element ref: ${ref}`);
-      // Appending keeps any saved login in the field, so the field stays hidden from snapshots.
       const holdsLogin = loginFilled.has(el);
       const result = this.fill(ref, `${"value" in el ? el.value : el.textContent || ""}${text}`);
       if (holdsLogin) loginFilled.add(el);
       return result;
     },
   };
+
+  window.__rakazoPageBrowser = api;
   return true;
 })()
 """

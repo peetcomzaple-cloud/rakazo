@@ -374,8 +374,24 @@ d_mutations = {
 }
 
 # 3. Verified Positive Cases (Must ALL PASS)
-valid_pdf_content = b'%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\ntrailer\n<< /Root 1 0 R >>\nstartxref\n120\n%%EOF'
-valid_pdf_padded = valid_pdf_content + b' ' * 1000 + b'\n%%EOF'
+valid_pdf_padded = (
+    b"%PDF-1.3\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<\n/Producer (pypdf)\n>>\nendobj\n"
+    b"2 0 obj\n<<\n/Type /Pages\n/Count 10\n/Kids [ 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R ]\n>>\nendobj\n"
+    b"3 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n"
+    b"4 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"5 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"6 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"7 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"8 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"9 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"10 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"11 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"12 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"13 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"xref\n0 14\n0000000000 65535 f \n0000000015 00000 n \n0000000054 00000 n \n0000000172 00000 n \n0000000221 00000 n \n0000000315 00000 n \n0000000409 00000 n \n0000000503 00000 n \n0000000597 00000 n \n0000000691 00000 n \n0000000785 00000 n \n0000000880 00000 n \n0000000975 00000 n \n0000001070 00000 n \n"
+    b"trailer\n<<\n/Size 14\n/Root 3 0 R\n/Info 1 0 R\n>>\nstartxref\n1165\n%%EOF\n"
+)
+valid_pdf_content = valid_pdf_padded
 
 positive_cases = {
     'zcom': record(['browser_navigate', 'browser_act'], effects=[{'kind': 'browser_navigate', 'url': 'https://domain.z.com/sg/signin/', 'status': 'completed', 'login_form_visible': True}], status='waiting_takeover'),

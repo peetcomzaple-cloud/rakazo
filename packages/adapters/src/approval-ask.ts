@@ -9,10 +9,14 @@ export function buildApprovalAskBlock(
   toolName: string,
   args: Record<string, unknown>,
   secrets: string[],
-  options?: { reviewReason?: string },
+  options?: { reviewReason?: string; mandatory?: boolean; askReason?: string },
 ): MessageBlock {
   const summary = describeApprovalAction(toolName, args);
-  const detail = formatApprovalDetail(toolName, args, options?.reviewReason);
+  const detail = formatApprovalDetail(
+    toolName,
+    args,
+    options?.askReason || options?.reviewReason,
+  );
   const safeDetail = detail ? redactSecrets(detail, secrets) : undefined;
   return {
     kind: "ask",
@@ -32,11 +36,16 @@ export function buildApprovalAskBlock(
             { id: "allow", label: "Create space", outcome: "created" },
             { id: "deny", label: "Cancel", outcome: "cancelled" },
           ]
-        : [
-            { id: "allow", label: "Allow once" },
-            { id: "always", label: "Always allow this tool" },
-            { id: "deny", label: "Deny" },
-          ],
+        : options?.mandatory
+          ? [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ]
+          : [
+              { id: "allow", label: "Allow once" },
+              { id: "always", label: "Always allow this tool" },
+              { id: "deny", label: "Deny" },
+            ],
   };
 }
 

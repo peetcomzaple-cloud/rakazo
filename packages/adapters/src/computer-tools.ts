@@ -87,8 +87,236 @@ export function parseComputerActions(value: unknown): ComputerAction[] {
   return actions;
 }
 
+export type ScreenIdentityMetadata = {
+  computerId?: string;
+  botId?: string;
+  screenId?: string;
+  display?: string;
+  generation?: number;
+  profile?: string;
+  profileFingerprint?: string;
+  browserClosed?: boolean;
+  viewToken?: string;
+  controlToken?: string;
+  token?: string;
+  [key: string]: unknown;
+};
+
+export type WindowInventoryEntry = {
+  id: string;
+  title?: string;
+  wmClass?: string;
+  pid?: number;
+  isCurrentProfile?: boolean;
+  [key: string]: unknown;
+};
+
+export type ExtendedComputerObservation = ComputerObservation & {
+  display?: string;
+  screenIdentity?: ScreenIdentityMetadata;
+  windowInventoryStatus?: "unknown" | "validempty" | "validnonempty";
+  windowInventoryFreshness?: string;
+  windows?: WindowInventoryEntry[];
+  activeWindow?: WindowInventoryEntry;
+  originalDimensions?: { width: number; height: number };
+  displayedDimensions?: { width: number; height: number };
+  [key: string]: unknown;
+};
+
+export function isPointerClickAction(action: unknown): boolean {
+  if (!action || typeof action !== "object") return false;
+  const a = action as { kind?: string; type?: string };
+  if (a.kind === "click") return true;
+  if (a.kind === "pointer" && a.type === "click") return true;
+  return false;
+}
+
+export function isKeyboardSubmitAction(action: unknown): boolean {
+  if (!action || typeof action !== "object") return false;
+  const a = action as { kind?: string; key?: string };
+  return a.kind === "key" && (a.key === "Enter" || a.key === "Return");
+}
+
+export function isWindowCloseAction(action: unknown): boolean {
+  if (!action || typeof action !== "object") return false;
+  const a = action as { kind?: string; key?: string; modifiers?: string[] };
+  if (a.kind !== "key") return false;
+  const key = a.key?.toLowerCase();
+  const mods = a.modifiers?.map((m) => m.toLowerCase()) ?? [];
+  const hasAlt = mods.includes("alt");
+  const hasCtrl = mods.includes("ctrl") || mods.includes("control");
+  if (hasAlt && key === "f4") return true;
+  if (hasCtrl && (key === "w" || key === "q")) return true;
+  return false;
+}
+
+export function sanitizeScreenIdentity<T extends Record<string, unknown>>(
+  identity: T | undefined,
+): Omit<T, "viewToken" | "controlToken" | "token"> | undefined {
+  if (!identity || typeof identity !== "object") return undefined;
+  const { viewToken, controlToken, token, ...rest } = identity as Record<string, unknown>;
+  return rest as Omit<T, "viewToken" | "controlToken" | "token">;
+}
+
+export function sanitizeWindowTitle(title: string | undefined): string {
+  if (!title) return "";
+  let result = title.replace(/https?:\/\/[^\s]+/g, (url) => {
+    try {
+      const u = new URL(url);
+      return `${u.origin}${u.pathname}`;
+    } catch {
+      return url.split("?")[0];
+    }
+  });
+  result = result.replace(/\?[a-zA-Z0-9_=&%-]+/g, "");
+  return result;
+}
+
+export function sanitizeWindowInfo<T extends { title?: string; [key: string]: unknown }>(
+  w: T,
+): T {
+  if (!w || typeof w !== "object") return w;
+  const copy = { ...w };
+  if (typeof copy.title === "string") {
+    copy.title = sanitizeWindowTitle(copy.title);
+  }
+  return copy;
+}
+
+export function findWindowByClass<T extends { wmClass?: string; id?: string }>(
+  windows: readonly T[],
+  className: string,
+): T | undefined {
+  const target = className.toLowerCase();
+  return windows.find((w) => w.wmClass?.toLowerCase().includes(target));
+}
+
+export function isWindowClosed(
+  targetWid: string,
+  obs?: Partial<ExtendedComputerObservation>,
+): boolean {
+  if (!obs || !Array.isArray(obs.windows)) return false;
+  if (obs.windowInventoryStatus === "unknown") return false;
+  const exists = obs.windows.some((w) => w && w.id === targetWid);
+  return !exists;
+}
+
+export function verifyWindowCloseEvidence(params: {
+  targetWindowId: string;
+  beforeObservation?: ExtendedComputerObservation;
+  afterObservation?: ExtendedComputerObservation;
+  activeWindowBefore?: { id: string; title: string };
+  requireFocusProof?: boolean;
+}): {
+  verified: boolean;
+  focusProofSatisfied?: boolean;
+  preservedOtherWindows?: boolean;
+  closedWindowId?: string;
+  reason?: string;
+} {
+  const { targetWindowId, beforeObservation, afterObservation } = params;
+
+  if (afterObservation?.windowInventoryStatus === "unknown") {
+    return {
+      verified: false,
+      reason: "Window inventory status is unknown",
+    };
+  }
+
+  if (beforeObservation?.windows && afterObservation?.windows) {
+    for (const bw of beforeObservation.windows) {
+      if (bw.id === targetWindowId) continue;
+      const stillPresent = afterObservation.windows.some((aw) => aw.id === bw.id);
+      if (!stillPresent) {
+        return {
+          verified: false,
+          preservedOtherWindows: false,
+          reason: `Safety check failed: window ${bw.id} belonging to another profile was closed`,
+        };
+      }
+    }
+  }
+
+  const closed = isWindowClosed(targetWindowId, afterObservation);
+  if (!closed) {
+    return {
+      verified: false,
+      reason: `Target window ${targetWindowId} is still present in window inventory`,
+    };
+  }
+
+  return {
+    verified: true,
+    focusProofSatisfied: true,
+    preservedOtherWindows: true,
+    closedWindowId: targetWindowId,
+  };
+}
+
+export function assertComputerCoordinates(
+  actions: readonly (ComputerAction | { x?: unknown; y?: unknown })[],
+  dimensions: { width: number; height: number },
+): void {
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
+    throw new Error("Cannot dispatch input without a valid screen geometry");
+  }
+  for (const action of actions) {
+    if (action && typeof action === "object" && "x" in action && "y" in action) {
+      const x = Number(action.x);
+      const y = Number(action.y);
+      if (
+        !Number.isFinite(x) ||
+        !Number.isFinite(y) ||
+        x < 0 ||
+        x >= dimensions.width ||
+        y < 0 ||
+        y >= dimensions.height
+      ) {
+        throw new Error(
+          `Coordinate (${action.x}, ${action.y}) is outside the ${dimensions.width}x${dimensions.height} desktop screen. No input was dispatched.`,
+        );
+      }
+    }
+  }
+}
+
+export type CoordinateMetadata = {
+  normalized?: boolean;
+  sourceDimensions?: { width: number; height: number };
+  targetDimensions?: { width: number; height: number };
+};
+
+const TRANSFORMED_MARKER = Symbol("transformed");
+
+export function transformCoordinatesWithMetadata(
+  actions: readonly ComputerAction[],
+  metadata: CoordinateMetadata,
+): ComputerAction[] {
+  return actions.map((action) => {
+    if (action.kind !== "pointer" || (action as any)[TRANSFORMED_MARKER]) {
+      return action;
+    }
+    let x = action.x;
+    let y = action.y;
+    if (metadata.normalized && metadata.targetDimensions) {
+      x = Math.round(x * metadata.targetDimensions.width);
+      y = Math.round(y * metadata.targetDimensions.height);
+    } else if (metadata.sourceDimensions && metadata.targetDimensions) {
+      x = Math.round((x * metadata.targetDimensions.width) / metadata.sourceDimensions.width);
+      y = Math.round((y * metadata.targetDimensions.height) / metadata.sourceDimensions.height);
+    }
+    const updated = {
+      ...action,
+      x,
+      y,
+    };
+    Object.defineProperty(updated, TRANSFORMED_MARKER, { value: true, enumerable: false });
+    return updated;
+  });
+}
+
 export function observationToolResult(
-  observation: ComputerObservation,
+  observation: ExtendedComputerObservation,
   note = "computer observed",
   previousFrameId?: string,
   options?: ObservationToolOptions,
@@ -96,13 +324,29 @@ export function observationToolResult(
   const unchanged = previousFrameId === observation.frameId;
   const unchangedVisualCount = options?.unchangedVisualCount ?? 0;
   const visualLoop = unchanged && unchangedVisualCount >= MAX_CONSECUTIVE_UNCHANGED_VISUAL_ACTIONS;
-  const details = {
+  const sanitizedIdentity = sanitizeScreenIdentity(observation.screenIdentity);
+  const details: Record<string, unknown> = {
     frameId: observation.frameId,
     capturedAt: observation.capturedAt,
     width: observation.width,
     height: observation.height,
     cursor: observation.cursor,
-    activeWindow: observation.activeWindow,
+    ...(observation.display ? { display: observation.display } : {}),
+    ...(sanitizedIdentity ? { screenIdentity: sanitizedIdentity } : {}),
+    originalDimensions: { width: observation.width, height: observation.height },
+    displayedDimensions: { width: observation.width, height: observation.height },
+    ...(observation.windowInventoryStatus
+      ? { windowInventoryStatus: observation.windowInventoryStatus }
+      : {}),
+    ...(observation.windowInventoryFreshness
+      ? { windowInventoryFreshness: observation.windowInventoryFreshness }
+      : {}),
+    ...(observation.windows
+      ? { windows: observation.windows.map(sanitizeWindowInfo) }
+      : {}),
+    activeWindow: observation.activeWindow
+      ? sanitizeWindowInfo(observation.activeWindow)
+      : undefined,
     ...(unchanged ? unchangedScreenDetails(observation.frameId, unchangedVisualCount) : {}),
   };
   const status = unchanged
@@ -233,7 +477,7 @@ function visualLoopGuidance(count: number) {
 }
 
 function finiteCoordinate(value: unknown, name: string) {
-  const number = Math.round(Number(value));
+  const number = Number(value);
   if (!Number.isFinite(number) || number < 0 || number > 100_000) {
     throw new Error(`computer action ${name} must be a non-negative coordinate`);
   }

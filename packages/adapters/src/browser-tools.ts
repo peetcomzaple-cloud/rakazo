@@ -14,7 +14,7 @@ const MAX_BROWSER_ACTIONS = 24;
 export type SecretFillStep = {
   kind: "fill_secret";
   ref: string;
-  secret: string;
+  secret?: string;
   field: LoginField;
 };
 export type BrowserActInput = BrowserActStep | SecretFillStep;
@@ -92,10 +92,12 @@ export async function browserActFromTool(
     return redactConnectorPayload(formatBrowserResult(result), options.redactions?.() ?? []);
   } catch (error) {
     context.signal.throwIfAborted();
+    const rawError = error instanceof Error ? error.message : String(error);
+    const safeError = redactConnectorPayload({ error: rawError }, options.redactions?.() ?? []).error;
     return {
       ok: false,
       uncertain: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: typeof safeError === "string" ? safeError : rawError,
       fallback: "computer_act" as const,
     };
   }
@@ -120,13 +122,18 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     const ref = String(action.ref ?? "").trim();
     if (!ref) throw new Error(`browser_act action ${index} requires ref`);
     if (kind === "fill_secret") {
-      const secret = String(action.secret ?? "").trim();
       const field = action.field;
-      if (!secret) throw new Error("browser_act fill_secret requires secret");
       if (field !== "username" && field !== "password") {
         throw new Error("browser_act fill_secret field must be username or password");
       }
-      return { kind, ref, secret, field };
+      if (action.secret !== undefined) {
+        const secret = String(action.secret).trim();
+        if (!secret) {
+          throw new Error("browser_act fill_secret requires non-empty secret");
+        }
+        return { kind, ref, secret, field };
+      }
+      return { kind, ref, field };
     }
     if (kind === "fill" || kind === "type") {
       if (typeof action.text !== "string") {

@@ -556,8 +556,55 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
             ensure_world(client, session_id)
             ready = eval_json(client, session_id, "document.readyState")
             if ready in ("interactive", "complete"):
-                return {"ok": True, "url": eval_json(client, session_id, "location.href"),
-                        "title": eval_json(client, session_id, "(document.title || '').slice(0, 200)")}
+                page_info = eval_json(
+                    client,
+                    session_id,
+                    """(() => {
+                        let status = 200;
+                        try {
+                            const nav = performance.getEntriesByType('navigation')[0];
+                            if (nav && typeof nav.responseStatus === 'number' && nav.responseStatus > 0) {
+                                status = nav.responseStatus;
+                            }
+                        } catch (e) {}
+                        return {
+                            url: location.href,
+                            title: (document.title || '').slice(0, 200),
+                            httpStatus: status
+                        };
+                    })()""",
+                )
+                if not isinstance(page_info, dict):
+                    page_info = {
+                        "url": eval_json(client, session_id, "location.href"),
+                        "title": eval_json(client, session_id, "(document.title || '').slice(0, 200)"),
+                        "httpStatus": 200,
+                    }
+                status_code = page_info.get("httpStatus", 200)
+                page_url = str(page_info.get("url") or "")
+                page_title = str(page_info.get("title") or "")
+                loader_id = result.get("loaderId")
+                frame_id = frame.get("id")
+
+                if isinstance(status_code, int) and status_code >= 400:
+                    return {
+                        "ok": False,
+                        "httpStatus": status_code,
+                        "url": page_url,
+                        "title": page_title,
+                        "loaderId": loader_id,
+                        "frameId": frame_id,
+                        "error": f"HTTP {status_code} error: {page_title or 'Bad Response'}",
+                        "fallback": "computer_act",
+                    }
+                return {
+                    "ok": True,
+                    "httpStatus": status_code,
+                    "url": page_url,
+                    "title": page_title,
+                    "loaderId": loader_id,
+                    "frameId": frame_id,
+                }
         except Exception:
             pass
         time.sleep(0.1)

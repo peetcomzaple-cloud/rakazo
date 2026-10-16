@@ -379,8 +379,11 @@ import {
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
-import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
-import { repairThaiExplanation, userLanguageInstruction } from "./run-language.js";
+import {
+  formatThaiToolActivity,
+  repairThaiExplanation,
+  userLanguageInstruction,
+} from "./run-language.js";
 import {
   detectOutputContract,
   enforceOutputContract,
@@ -444,6 +447,8 @@ import {
   isScreenshotRequest,
   isWindowCloseTask,
   isClickTask,
+  isSearchTask,
+  isLoginFormTask,
   verifyWebGoal,
   type WebGoalState,
 } from "./web-goal-verification.js";
@@ -3543,8 +3548,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
         const hasGraphicalSandbox =
           Boolean(leaseTarget.computerId) && deps.sandbox.describe().capabilities.graphical;
-        const requiresVision =
-          turnHasImages || hasGraphicalSandbox || isScreenshotRequest(task.prompt);
+        // Presence of a graphical sandbox alone does not require vision; only actual input images
+        // or explicit screenshot inspection tasks require vision capabilities.
+        const requiresVision = turnHasImages || isScreenshotRequest(task.prompt);
         // modelPinned distinguishes the captured choice from an attempt's recorded model.
         const tier = taskModelTier(
           deps.taskModelTiers,
@@ -4201,6 +4207,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let initialWebUrl: string | undefined = undefined;
         let currentWebUrl: string | undefined = undefined;
         let currentWebTitle: string | undefined = undefined;
+        let latestHttpStatus: number | undefined = undefined;
         let webDomStateChanged = false;
         let webScreenChanged = false;
         let lastTabularEvidence: unknown = undefined;
@@ -4217,6 +4224,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let latestSnapshotElements: Array<{ ref?: string; role?: string; name?: string; value?: string; type?: string }> = [];
         let lastComputerObservation: Awaited<ReturnType<SandboxProvider["observe"]>> | undefined = undefined;
         let consecutiveWebShellInspections = 0;
+        let lastEmittedActivity: string | undefined = undefined;
 
         if (isScreenshotRequest(task.prompt) && publishScreen && graphical) {
           try {
@@ -5960,11 +5968,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (name === "browser_navigate") {
                 webActionsCount++;
                 webNavigationsCount++;
-                const navRes = result as { ok?: boolean; url?: string; title?: string; error?: string };
-                if (navRes.ok === false) {
+                const navRes = result as {
+                  ok?: boolean;
+                  url?: string;
+                  title?: string;
+                  error?: string;
+                  httpStatus?: number;
+                };
+                if (navRes.httpStatus !== undefined) {
+                  latestHttpStatus = navRes.httpStatus;
+                }
+                const isHttpError =
+                  navRes.ok === false ||
+                  (navRes.httpStatus !== undefined && navRes.httpStatus >= 400) ||
+                  (navRes.title &&
+                    /(?:Error 400|Error 403|Error 404|Error 500|Bad Request)/i.test(navRes.title));
+                if (isHttpError) {
                   lastWebActionOk = false;
                   lastWebActionVerified = false;
-                  lastWebActionError = navRes.error;
+                  lastWebActionError =
+                    navRes.error ||
+                    (navRes.httpStatus ? `HTTP ${navRes.httpStatus}` : navRes.title);
+                  if (navRes.url) currentWebUrl = navRes.url;
+                  if (navRes.title) currentWebTitle = navRes.title;
                 } else {
                   lastWebActionOk = true;
                   lastWebActionError = undefined;
@@ -5975,6 +6001,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   }
                   currentWebUrl = navRes.url;
                   currentWebTitle = navRes.title;
+                }
                   if (Array.isArray((navRes as any).elements)) {
                     latestSnapshotElements = (navRes as any).elements;
                     const snapElements = (navRes as any).elements as Array<{ role?: string; name?: string; type?: string }>;
@@ -6004,8 +6031,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       loginFormVisible = true;
                     }
                   }
-                }
-              } else if (name === "browser_snapshot") {
+                } else if (name === "browser_snapshot") {
                 const snapRes = result as {
                   url?: string;
                   title?: string;
@@ -6773,9 +6799,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     );
                   }
                   if (isOneUseLogin) {
+                    const resolvedOrigin =
+                      "origin" in resolvedSecret && typeof resolvedSecret.origin === "string"
+                        ? resolvedSecret.origin
+                        : typeof args.origin === "string"
+                          ? args.origin
+                          : undefined;
                     return {
                       ok: true,
                       submitted: true,
+                      oneUse: true,
+                      origin: resolvedOrigin,
                       note: "Login credentials submitted securely. Now navigate to the login page, verify form fields with browser_snapshot, and use browser_act fill_secret to fill them. Never request or echo credentials in chat.",
                     };
                   }
@@ -7700,6 +7734,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 pendingProgress = "";
                 lastProgressAt = Date.now();
               }
+              let activityText = redactSecrets(event.text, runSecrets);
+              if (isThaiTurn && event.activity) {
+                activityText = formatThaiToolActivity(activityText);
+              }
+              if (event.activity && activityText === lastEmittedActivity) {
+                return;
+              }
+              if (event.activity) {
+                lastEmittedActivity = activityText;
+              }
+              if (activityText.length > 200) {
+                activityText = `${activityText.slice(0, 197)}...`;
+              }
               await deps.events.append({
                 spaceId: run.spaceId,
                 threadId: thread.id,
@@ -7707,7 +7754,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 type: "thread.progress",
                 runId,
                 payload: {
-                  text: redactSecrets(event.text, runSecrets),
+                  text: activityText,
                   ...(event.activity ? { activity: true } : {}),
                 },
               });
@@ -7756,13 +7803,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (!(await renewRunLease(deps, runId, workerId, fence))) return;
               const safeReason = redactSecrets(event.reason, runSecrets);
               const isLoginTask = isLoginFormTask(task.prompt);
+              const isChallenge =
+                browserRecovery.isChallengeDetected() ||
+                safeReason.toLowerCase().includes("captcha") ||
+                safeReason.toLowerCase().includes("challenge") ||
+                safeReason.toLowerCase().includes("turnstile") ||
+                safeReason.toLowerCase().includes("hcaptcha");
               let handoffReason = safeReason;
               if (isLoginTask) {
-                if (loginFormVisible) {
+                const isHttpError =
+                  (latestHttpStatus !== undefined && latestHttpStatus >= 400) ||
+                  (currentWebTitle &&
+                    /(?:Error 400|Error 403|Error 404|Error 500|Bad Request)/i.test(currentWebTitle));
+                if (loginFormVisible && !isHttpError) {
                   handoffReason = `[Ready for Input] Reached login form at ${currentWebUrl || "page"}. ${safeReason}`;
+                } else if (isHttpError) {
+                  handoffReason = `[Blocker / HTTP Error] Reached error page (${currentWebTitle || `HTTP ${latestHttpStatus}`}) at ${currentWebUrl || "unknown"}. ${safeReason}`;
                 } else {
                   handoffReason = `[Blocker / Incomplete Navigation] Login form not reached on current page (${currentWebUrl || "unknown"}). ${safeReason}`;
                 }
+              } else if (isChallenge) {
+                handoffReason = `[Blocker / Security Challenge] ${safeReason}`;
               }
               // Publish pending narration as tagged mid-turn progress so reconciliation
               // does not treat pre-takeover text as the delegated final result.
@@ -7787,8 +7848,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 hasStreamedText = false;
                 pendingProgress = "";
               }
+              const isThai = /[\u0E00-\u0E7F]/.test(task.prompt);
+              const takeoverUserState = isThai ? "รอคุณช่วยดำเนินการบนหน้าจอ" : "Needs you";
               await publishMessage(deps, run, "bot", [
-                { kind: "computer", state: "Needs you", text: handoffReason },
+                { kind: "computer", state: takeoverUserState, text: handoffReason },
               ]);
               try {
                 await deps.prisma.externalEffect.create({
@@ -7803,13 +7866,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     request: {
                       reason: handoffReason,
                       url: currentWebUrl || null,
-                      handoffType: isLoginTask ? (loginFormVisible ? "ready_to_fill" : "blocker") : "takeover",
+                      handoffType: isLoginTask
+                        ? (loginFormVisible ? "ready_to_fill" : "blocker")
+                        : isChallenge
+                          ? "challenge"
+                          : "takeover",
                       login_form_visible: loginFormVisible,
+                      challenge_detected: isChallenge,
                     },
                     result: {
                       login_form_visible: loginFormVisible,
+                      challenge_detected: isChallenge,
                       url: currentWebUrl || null,
-                      handoffType: isLoginTask ? (loginFormVisible ? "ready_to_fill" : "blocker") : "takeover",
+                      handoffType: isLoginTask
+                        ? (loginFormVisible ? "ready_to_fill" : "blocker")
+                        : isChallenge
+                          ? "challenge"
+                          : "takeover",
                     },
                   },
                 });
@@ -8225,6 +8298,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             lastActionOk: lastWebActionOk,
             lastActionError: lastWebActionError,
             lastActionVerified: lastWebActionVerified,
+            httpStatus: latestHttpStatus,
             initialUrl: initialWebUrl,
             currentUrl: currentWebUrl,
             currentTitle: currentWebTitle,
@@ -8247,6 +8321,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             targetWindowClosed,
             windowsRemaining: latestWindowsInventory,
             targetWindowClass: isWindowCloseTask(task.prompt) ? "chromium" : undefined,
+            challengeDetected: browserRecovery.isChallengeDetected(),
+            challengeType: browserRecovery.getChallengeType(),
           };
           const webVerification = verifyWebGoal(task.prompt, webGoalState);
           if (!webVerification.ok) {

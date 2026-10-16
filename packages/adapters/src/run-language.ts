@@ -244,3 +244,37 @@ export function repairThaiExplanation(text: string, isThaiPrompt: boolean): stri
 
   return result;
 }
+
+export function formatThaiToolActivity(activityText: string): string {
+  if (!activityText) return activityText;
+  const text = activityText.trim();
+  // Exact matches first
+  if (text === "Reading the page") return "กำลังอ่านข้อมูลหน้าเว็บ";
+  if (text === "Using the page") return "กำลังทำงานบนหน้าเว็บ";
+  if (text === "Operating the computer") return "กำลังสั่งการบนหน้าจอ";
+  if (text === "Looking at the screen") return "กำลังตรวจดูหน้าจอ";
+  if (text === "Rendering a chart") return "กำลังสร้างแผนภูมิ";
+  if (text === "Saving a note to memory") return "กำลังบันทึกความจำ";
+
+  // Specific prefix matches
+  if (text.startsWith("Opening page: ")) {
+    const target = text.slice(14);
+    if (/gmail|mail\.google/i.test(target)) return "กำลังเปิดอีเมล";
+    return `กำลังเปิดหน้าเว็บ: ${target}`;
+  }
+  if (text.startsWith("Running: ")) return `กำลังรันคำสั่ง: ${text.slice(9)}`;
+  if (text.startsWith("Reading page: ")) return `กำลังอ่านหน้าเว็บ: ${text.slice(14)}`;
+  if (text.startsWith("Reading ")) return `กำลังอ่าน: ${text.slice(8)}`;
+  if (text.startsWith("Writing ")) return `กำลังบันทึก: ${text.slice(8)}`;
+  if (text.startsWith("Listing ")) return `กำลังสำรวจ: ${text.slice(8)}`;
+  if (text.startsWith("Attaching ")) return `กำลังแนบ: ${text.slice(10)}`;
+  if (text.startsWith("Opening ")) return `กำลังเปิด: ${text.slice(8)}`;
+  if (text.startsWith("Connecting MCP server: ")) return `กำลังเชื่อมต่อ MCP: ${text.slice(23)}`;
+  if (text.startsWith("Delegating to helper: ")) return `กำลังส่งต่อให้บอตผู้ช่วย: ${text.slice(22)}`;
+  if (text.startsWith("Creating space: ")) return `กำลังสร้างสเปซ: ${text.slice(16)}`;
+  if (text.startsWith("Saving shared memory: ")) return `กำลังบันทึกความจำร่วม: ${text.slice(22)}`;
+  if (text.startsWith("Searching the web: ")) return `กำลังค้นหาข้อมูล: ${text.slice(19)}`;
+  if (text.startsWith("Using ")) return `กำลังใช้งาน: ${text.slice(6)}`;
+  return text;
+}
+

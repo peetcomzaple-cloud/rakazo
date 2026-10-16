@@ -5,6 +5,7 @@ export interface NavigationFailureRecord {
   errorCode: string;
   errorKind: string;
   retryable: boolean;
+  httpStatus?: number;
   suggestions?: string[];
   note?: string;
   attempts: number;
@@ -18,9 +19,28 @@ export class BrowserRecovery {
   private uncertain = false;
   private lastError = "";
   private navigationFailure?: NavigationFailureRecord;
+  private challengeDetected = false;
+  private challengeType?: string;
+  private cdpDisconnected = false;
 
   constructor(effects: Array<{ kind: string; result: unknown }> = []) {
     for (const effect of effects) this.record(effect.kind, effect.result);
+  }
+
+  isChallengeDetected(): boolean {
+    return this.challengeDetected;
+  }
+
+  getChallengeType(): string | undefined {
+    return this.challengeType;
+  }
+
+  isCdpDisconnected(): boolean {
+    return this.cdpDisconnected;
+  }
+
+  getNavigationFailure(): NavigationFailureRecord | undefined {
+    return this.navigationFailure;
   }
 
   record(name: string, result: unknown): void {
@@ -39,6 +59,25 @@ export class BrowserRecovery {
     if (name === "browser_snapshot") {
       if (!value.error && value.ok !== false) {
         this.snapshotSinceStale = true;
+        if (value.challengeDetected === false) {
+          this.challengeDetected = false;
+          this.challengeType = undefined;
+        }
+      }
+      if (
+        value.challengeDetected === true ||
+        (typeof value.title === "string" &&
+          /(?:captcha|challenge|turnstile|hcaptcha|just a moment)/i.test(value.title))
+      ) {
+        this.challengeDetected = true;
+        this.challengeType =
+          typeof value.challengeType === "string"
+            ? value.challengeType
+            : typeof value.title === "string" && /turnstile/i.test(value.title)
+              ? "turnstile"
+              : typeof value.title === "string" && /hcaptcha/i.test(value.title)
+                ? "hcaptcha"
+                : "captcha";
       }
       return;
     }
@@ -56,19 +95,93 @@ export class BrowserRecovery {
             hostname = url.replace(/^[a-zA-Z]+:\/\//, "").split("/")[0]?.split(":")[0] ?? "";
           }
         }
+        const httpStatus =
+          typeof value.httpStatus === "number"
+            ? value.httpStatus
+            : typeof value.status_code === "number"
+              ? value.status_code
+              : undefined;
+
         const isNxdomain =
           value.errorCode === "NXDOMAIN" ||
           err.includes("ERR_NAME_NOT_RESOLVED") ||
           err.includes("ERR_NAME_RESOLUTION_FAILED") ||
           err.includes("ENOTFOUND");
 
-        const errorCode = String(
-          value.errorCode ?? (isNxdomain ? "NXDOMAIN" : "BROWSER_ERROR"),
-        );
-        const errorKind = String(
-          value.errorKind ?? (isNxdomain ? "nxdomain" : "unknown"),
-        );
-        const retryable = value.retryable === true && !isNxdomain;
+        const isTlsDns =
+          !isNxdomain &&
+          (value.errorCode === "TLS_DNS" ||
+            err.includes("ERR_CONNECTION_REFUSED") ||
+            err.includes("ERR_CERT_") ||
+            err.includes("ERR_SSL_") ||
+            err.includes("certificate"));
+
+        const isCdp =
+          err.includes("WebSocket") ||
+          err.includes("Target closed") ||
+          err.includes("CDP disconnected") ||
+          err.includes("No target");
+
+        const isChallenge =
+          value.challengeDetected === true ||
+          /(?:captcha|challenge|turnstile|hcaptcha|just a moment)/i.test(err);
+
+        const isFlowStateInvalid =
+          httpStatus === 400 ||
+          err.includes("Error 400") ||
+          err.includes("400 Bad Request") ||
+          (/(?:signin|login|auth|oauth|challenge|callback|flowEntry)/i.test(url) &&
+            httpStatus !== undefined &&
+            httpStatus >= 400);
+
+        let errorCode = String(value.errorCode ?? "BROWSER_ERROR");
+        let errorKind = String(value.errorKind ?? "unknown");
+        let retryable = value.retryable === true;
+        let suggestions = Array.isArray(value.suggestions)
+          ? (value.suggestions as string[])
+          : undefined;
+        let note = typeof value.note === "string" ? value.note : undefined;
+
+        if (isNxdomain) {
+          errorCode = "NXDOMAIN";
+          errorKind = "nxdomain";
+          retryable = false;
+        } else if (isTlsDns) {
+          errorCode = "TLS_DNS";
+          errorKind = "tls_dns";
+          retryable = false;
+        } else if (isCdp) {
+          errorCode = "CDP_DISCONNECTED";
+          errorKind = "cdp_disconnected";
+          retryable = true;
+          this.cdpDisconnected = true;
+        } else if (isChallenge) {
+          errorCode = "CHALLENGE_DETECTED";
+          errorKind = "challenge";
+          retryable = false;
+          this.challengeDetected = true;
+          this.challengeType =
+            typeof value.challengeType === "string" ? value.challengeType : "captcha";
+        } else if (isFlowStateInvalid) {
+          errorCode = "FLOW_STATE_INVALID";
+          errorKind = "flow_state_invalid";
+          retryable = true;
+          suggestions = suggestions || [
+            "Return to service entry point (base login URL) before attempting any storage resets",
+          ];
+          note =
+            note ||
+            "หน้าล็อกอินภายในคืนค่า HTTP 400 Bad Request เนื่องจากขาด flow state ให้กลับไปยัง entry point เริ่มต้นของบริการ";
+        } else if (httpStatus !== undefined && httpStatus >= 400) {
+          errorCode = `HTTP_${httpStatus}`;
+          errorKind =
+            httpStatus === 429
+              ? "rate_limited"
+              : httpStatus >= 500
+                ? "server_error"
+                : "http_error";
+          retryable = httpStatus === 429 || httpStatus >= 500;
+        }
 
         this.navigationFailure = {
           url,
@@ -77,15 +190,15 @@ export class BrowserRecovery {
           errorCode,
           errorKind,
           retryable,
-          suggestions: Array.isArray(value.suggestions)
-            ? (value.suggestions as string[])
-            : undefined,
-          note: typeof value.note === "string" ? value.note : undefined,
+          httpStatus,
+          suggestions,
+          note,
           attempts: (this.navigationFailure?.attempts ?? 0) + 1,
         };
       } else {
         // Successful navigation clears any navigation failure
         this.navigationFailure = undefined;
+        this.cdpDisconnected = false;
       }
       return;
     }
@@ -93,18 +206,47 @@ export class BrowserRecovery {
     // Handle browser_act and computer_act
     if (value.error || value.ok === false) {
       if (name === "browser_act") {
+        const err = String(value.error || "");
+        const isChallenge =
+          value.challengeDetected === true ||
+          /(?:captcha|challenge|turnstile|hcaptcha)/i.test(err);
+        if (isChallenge) {
+          this.challengeDetected = true;
+          this.challengeType =
+            typeof value.challengeType === "string"
+              ? value.challengeType
+              : /turnstile/i.test(err)
+                ? "turnstile"
+                : /hcaptcha/i.test(err)
+                  ? "hcaptcha"
+                  : "captcha";
+          this.lastError = err || "Security challenge detected";
+          return;
+        }
+
+        const isCdp =
+          err.includes("WebSocket") ||
+          err.includes("Target closed") ||
+          err.includes("CDP disconnected") ||
+          err.includes("No target");
+        if (isCdp) {
+          this.cdpDisconnected = true;
+          this.lastError = err;
+          return;
+        }
+
         const isStaleBeforeDispatch =
           !value.uncertain &&
           Number(value.completed ?? 0) === 0 &&
-          String(value.error || "").includes("Stale element ref");
+          err.includes("Stale element ref");
         if (isStaleBeforeDispatch) {
           this.staleRefFailures += 1;
           this.snapshotSinceStale = false;
-          this.lastError = String(value.error || "Stale element ref");
+          this.lastError = err || "Stale element ref";
         } else {
           this.failures += 1;
           this.uncertain ||= value.uncertain === true || Number(value.completed ?? 0) > 0;
-          this.lastError = String(value.error || "Page action was not confirmed");
+          this.lastError = err || "Page action was not confirmed";
         }
       }
     } else {
@@ -114,6 +256,7 @@ export class BrowserRecovery {
       this.snapshotSinceStale = false;
       this.uncertain = false;
       this.lastError = "";
+      this.cdpDisconnected = false;
       // NOTE: A successful computer_act does NOT clear navigation failure,
       // because clicking the desktop does not prove navigation to a dead domain succeeded.
     }
@@ -149,6 +292,22 @@ export class BrowserRecovery {
           };
         }
 
+        // If flow_state_invalid: block retrying the exact same broken URL, but allow navigating to service entry point
+        if (
+          this.navigationFailure.errorKind === "flow_state_invalid" &&
+          targetUrl &&
+          targetUrl === this.navigationFailure.url
+        ) {
+          return {
+            ok: false,
+            error: `Navigation to ${this.navigationFailure.url} failed with HTTP 400 (flow state invalid). Do not retry the exact internal flow URL; navigate to the service entry point instead.`,
+            errorCode: "FLOW_STATE_INVALID",
+            retryable: false,
+            suggestions: this.navigationFailure.suggestions,
+            note: this.navigationFailure.note,
+          };
+        }
+
         // Non-retryable errors block repeating the same URL
         if (!this.navigationFailure.retryable && targetHost === this.navigationFailure.hostname) {
           return {
@@ -160,7 +319,11 @@ export class BrowserRecovery {
         }
 
         // Bounded retries for transient failures (max 2 attempts)
-        if (this.navigationFailure.attempts >= 2 && targetHost === this.navigationFailure.hostname) {
+        if (
+          this.navigationFailure.attempts >= 2 &&
+          targetHost === this.navigationFailure.hostname &&
+          (!targetUrl || targetUrl === this.navigationFailure.url)
+        ) {
           return {
             ok: false,
             error: `Navigation to ${this.navigationFailure.url} reached retry limit (${this.navigationFailure.attempts} attempts).`,
@@ -174,7 +337,39 @@ export class BrowserRecovery {
 
     // 2. Check if browser_act is blocked
     if (toolName === "browser_act") {
+      if (this.challengeDetected) {
+        return {
+          ok: false,
+          completed: 0,
+          blocked: true,
+          challengeDetected: true,
+          challengeType: this.challengeType,
+          error: `Security challenge (${this.challengeType || "CAPTCHA"}) detected. Automated page actions paused.`,
+          fallback: "request_takeover",
+          note: "ตรวจพบแบบทดสอบความปลอดภัย (CAPTCHA) กรุณาใช้ request_takeover เพื่อให้ผู้ใช้ช่วยยืนยันบนหน้าจอ ห้ามส่งคำสั่งอัตโนมัติซ้ำ",
+        };
+      }
+      if (this.cdpDisconnected) {
+        return {
+          ok: false,
+          completed: 0,
+          error: "Browser connection was interrupted (CDP disconnected). Reconnect or inspect page before retrying.",
+          errorCode: "CDP_DISCONNECTED",
+          retryable: true,
+          note: "การเชื่อมต่อเบราว์เซอร์ขัดข้อง ควรเชื่อมต่อใหม่ก่อนลองส่งคำสั่งบนหน้าเว็บ",
+        };
+      }
       if (this.navigationFailure) {
+        if (this.navigationFailure.errorKind === "flow_state_invalid") {
+          return {
+            ok: false,
+            completed: 0,
+            error: `Cannot perform page actions: current page is an invalid flow state (${this.navigationFailure.error}). Return to service entry point first.`,
+            errorCode: "FLOW_STATE_INVALID",
+            suggestions: this.navigationFailure.suggestions,
+            note: this.navigationFailure.note,
+          };
+        }
         return {
           ok: false,
           completed: 0,
@@ -229,6 +424,12 @@ export class BrowserRecovery {
     }
 
     // Default check without toolName specified
+    if (this.challengeDetected) {
+      return this.unresolvedResult();
+    }
+    if (this.cdpDisconnected) {
+      return this.unresolvedResult();
+    }
     if (this.navigationFailure) {
       return this.unresolvedResult();
     }
@@ -239,9 +440,34 @@ export class BrowserRecovery {
   }
 
   unresolvedResult(): Record<string, unknown> | undefined {
+    if (this.challengeDetected) {
+      return {
+        ok: false,
+        completed: 0,
+        uncertain: false,
+        challengeDetected: true,
+        challengeType: this.challengeType,
+        error: `Security challenge (${this.challengeType || "CAPTCHA"}) detected on page.`,
+        fallback: "request_takeover",
+        note: "ตรวจพบแบบทดสอบความปลอดภัย (CAPTCHA) ต้องให้ผู้ใช้ช่วยดำเนินการบนหน้าจอ",
+      };
+    }
+
+    if (this.cdpDisconnected) {
+      return {
+        ok: false,
+        completed: 0,
+        uncertain: false,
+        errorCode: "CDP_DISCONNECTED",
+        error: "Browser connection was interrupted (CDP disconnected).",
+        note: "การเชื่อมต่อเบราว์เซอร์ขัดข้อง",
+      };
+    }
+
     // If navigation failed and was never recovered by a successful navigation:
     if (this.navigationFailure) {
       const isNxdomain = this.navigationFailure.errorKind === "nxdomain";
+      const isFlowInvalid = this.navigationFailure.errorKind === "flow_state_invalid";
       return {
         ok: false,
         completed: 0,
@@ -250,6 +476,7 @@ export class BrowserRecovery {
         errorCode: this.navigationFailure.errorCode,
         errorKind: this.navigationFailure.errorKind,
         hostname: this.navigationFailure.hostname,
+        httpStatus: this.navigationFailure.httpStatus,
         suggestions: this.navigationFailure.suggestions,
         retryable: this.navigationFailure.retryable,
         fallback: isNxdomain ? undefined : "computer_act",
@@ -257,7 +484,9 @@ export class BrowserRecovery {
           this.navigationFailure.note ||
           (isNxdomain
             ? "Cannot resolve domain name in DNS. Do not retry this URL or use desktop fallback to fix DNS."
-            : "Page navigation failed and was not recovered."),
+            : isFlowInvalid
+              ? "หน้าเว็บคืนค่า HTTP 400 flow state ไม่ถูกต้อง ควรกลับไปยัง entry point เริ่มต้นของบริการ"
+              : "Page navigation failed and was not recovered."),
       };
     }
 

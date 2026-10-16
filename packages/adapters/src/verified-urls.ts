@@ -182,7 +182,18 @@ export function formatThaiBrowserFailureMessage(blocked: {
   hostname?: unknown;
   suggestions?: unknown;
   note?: unknown;
+  challengeDetected?: unknown;
+  challengeType?: unknown;
 }): string {
+  if (blocked.challengeDetected) {
+    return `ยังทำงานไม่สำเร็จ: ตรวจพบแบบทดสอบความปลอดภัย (${blocked.challengeType || "CAPTCHA"}) ต้องให้ผู้ใช้ช่วยดำเนินการบนหน้าจอ`;
+  }
+  if (blocked.errorCode === "FLOW_STATE_INVALID") {
+    return `ยังทำงานไม่สำเร็จ: หน้าเว็บส่งกลับข้อผิดพลาด HTTP 400 (flow state ไม่ถูกต้อง) ควรนำทางกลับไปยังหน้าเริ่มต้นของบริการ`;
+  }
+  if (blocked.errorCode === "CDP_DISCONNECTED") {
+    return "ยังทำงานไม่สำเร็จ: การเชื่อมต่อเบราว์เซอร์ขัดข้อง (CDP disconnected) กรุณาเชื่อมต่อเบราว์เซอร์อีกครั้ง";
+  }
   if (
     blocked.note &&
     typeof blocked.note === "string" &&

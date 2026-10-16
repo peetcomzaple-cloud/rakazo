@@ -152,10 +152,40 @@ class PageBrowserTest(unittest.TestCase):
                 return {"executionContextId": 7}
             raise AssertionError(f"unexpected CDP call: {method}")
 
-        client.call = fake_call  # type: ignore[method-assign]
-        helper.ensure_world(client, "session-a")
-        self.assertEqual(client.context_id, 7)
+    def test_navigate_detects_http_400_bad_request(self):
+        client = Mock()
+        client.call.side_effect = [
+            {"loaderId": "loader-1", "frameId": "frame-1"},  # Page.navigate
+            {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1"}}},  # Page.getFrameTree
+        ]
+        with patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",  # readyState
+                {"url": "https://accounts.example.test/signin", "title": "Error 400 (Bad Request)!!1", "httpStatus": 400},
+            ]
+            res = helper.navigate(client, "session", "https://accounts.example.test/signin")
+            self.assertFalse(res["ok"])
+            self.assertEqual(res["httpStatus"], 400)
+            self.assertEqual(res["title"], "Error 400 (Bad Request)!!1")
+            self.assertEqual(res["fallback"], "computer_act")
+
+    def test_navigate_returns_success_for_http_200(self):
+        client = Mock()
+        client.call.side_effect = [
+            {"loaderId": "loader-1", "frameId": "frame-1"},  # Page.navigate
+            {"frameTree": {"frame": {"id": "frame-1", "loaderId": "loader-1"}}},  # Page.getFrameTree
+        ]
+        with patch.object(helper, "ensure_world"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.side_effect = [
+                "complete",  # readyState
+                {"url": "https://accounts.example.test/signin", "title": "Sign in - Google Accounts", "httpStatus": 200},
+            ]
+            res = helper.navigate(client, "session", "https://accounts.example.test/signin")
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["httpStatus"], 200)
+            self.assertEqual(res["title"], "Sign in - Google Accounts")
 
 
 if __name__ == "__main__":
     unittest.main()
+

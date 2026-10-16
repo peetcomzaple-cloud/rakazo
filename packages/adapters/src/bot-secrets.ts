@@ -201,6 +201,8 @@ export type RequestSecretDestinationResult = {
   /** Metadata only. The protected value is never part of this result. */
   destination?: BotSecretDestination;
   connectionId?: string;
+  oneUse?: boolean;
+  origin?: string;
   error?: string;
 };
 
@@ -213,6 +215,27 @@ export type RequestSecretDestinationResult = {
 export function resolveRequestSecretDestination(
   args: Record<string, unknown>,
 ): RequestSecretDestinationResult {
+  const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+  const hasCredentialObject =
+    (Object.hasOwn(args, "credential") && args.credential != null && args.credential !== "") ||
+    (Object.hasOwn(args, "auth") && args.auth != null);
+  const hasName = typeof args.name === "string" && args.name.trim().length > 0;
+
+  if ((purpose === "login" || purpose === "password") && !hasCredentialObject && (!hasName || !args.auth)) {
+    if (args.origin != null && String(args.origin).trim()) {
+      try {
+        const url = new URL(String(args.origin));
+        if (url.protocol !== "https:") {
+          return { error: "Website logins can only be filled on an HTTPS origin." };
+        }
+        return { oneUse: true, origin: url.origin };
+      } catch {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+    }
+    return { oneUse: true, origin: undefined };
+  }
+
   const credential = credentialArgument(args);
   if (credential !== undefined) {
     try {
@@ -593,48 +616,136 @@ export async function resolveLoginFill(input: {
   prisma: PrismaClient;
   secretStore: SecretStore;
   scope: BotSecretScope;
-  name: string;
+  name?: string;
+  runId?: string;
   field: LoginField;
+  currentOrigin?: string;
 }): Promise<{ text: string; origin: string; redactions: string[] } | { error: string }> {
-  const row = await input.prisma.botSecret.findFirst({
-    where: { ...scopeFields(input.scope), name: input.name },
-  });
-  if (!row) return { error: "Login is unavailable. Use request_secret to save it first." };
-  if (isCommandCredential(row.auth)) {
-    return {
-      error: `${UNUSABLE_CREDENTIAL}. Command variables are only available to shell commands.`,
-    };
+  if (input.name) {
+    const row = await input.prisma.botSecret.findFirst({
+      where: { ...scopeFields(input.scope), name: input.name },
+    });
+    if (row) {
+      if (isCommandCredential(row.auth)) {
+        return {
+          error: `${UNUSABLE_CREDENTIAL}. Command variables are only available to shell commands.`,
+        };
+      }
+      // Checked on the stored origin itself, so the private-LAN HTTP allowance cannot widen a login.
+      let storedOrigin: URL;
+      try {
+        storedOrigin = new URL(row.origin);
+      } catch {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      if (storedOrigin.protocol !== "https:") {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      const destination = normalizeSecretDestination(row);
+      if (destination.auth.type !== "login") {
+        return { error: "This credential is not a website login." };
+      }
+      if (destination.origin !== storedOrigin.origin) {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      if (input.currentOrigin) {
+        try {
+          const cur = new URL(input.currentOrigin).origin;
+          if (cur !== destination.origin) return { error: "origin mismatch" };
+        } catch {
+          return { error: "origin mismatch" };
+        }
+      }
+      if (input.field !== "username" && input.field !== "password") {
+        return { error: "field unavailable" };
+      }
+      const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
+      return {
+        text: login[input.field],
+        origin: destination.origin,
+        // Redaction is substring replacement, so a short username would mangle unrelated text.
+        redactions: [
+          ...new Set(
+            [login.password, encodeURIComponent(login.password)].concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            ),
+          ),
+        ],
+      };
+    }
   }
-  // Checked on the stored origin itself, so the private-LAN HTTP allowance cannot widen a login.
-  let storedOrigin: URL;
-  try {
-    storedOrigin = new URL(row.origin);
-  } catch {
-    return { error: "Website logins can only be filled on an HTTPS origin." };
+
+  // Fallback to one-use ephemeral secret for active run
+  const runId = input.runId ?? (input.scope as any).id;
+  if (runId) {
+    const secretRow = await (input.prisma as any).secret?.findFirst?.({
+      where: {
+        spaceId: input.scope.spaceId,
+        userId: input.scope.userId,
+        kind: `run-secret:${runId}`,
+      },
+    });
+    if (secretRow) {
+      const effectRow = await (input.prisma as any).externalEffect?.findFirst?.({
+        where: {
+          spaceId: input.scope.spaceId,
+          runId,
+          kind: "request_secret",
+          status: { in: ["approved", "completed", "executing"] },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      const resultObj =
+        effectRow?.result && typeof effectRow.result === "object"
+          ? (effectRow.result as Record<string, unknown>)
+          : undefined;
+      const argsObj =
+        effectRow?.args && typeof effectRow.args === "object"
+          ? (effectRow.args as Record<string, unknown>)
+          : undefined;
+      const originVal = resultObj?.origin ?? argsObj?.origin;
+      if (!originVal || typeof originVal !== "string") {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      let storedOrigin: URL;
+      try {
+        storedOrigin = new URL(originVal);
+      } catch {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      if (storedOrigin.protocol !== "https:") {
+        return { error: "Website logins can only be filled on an HTTPS origin." };
+      }
+      if (input.currentOrigin) {
+        try {
+          const cur = new URL(input.currentOrigin).origin;
+          if (cur !== storedOrigin.origin) return { error: "origin mismatch" };
+        } catch {
+          return { error: "origin mismatch" };
+        }
+      }
+      if (input.field !== "username" && input.field !== "password") {
+        return { error: "field unavailable" };
+      }
+      const plaintext = await input.secretStore.load(secretRow.ciphertext, secretRow.id);
+      const login = decodeLoginSecret(plaintext);
+      return {
+        text: login[input.field],
+        origin: storedOrigin.origin,
+        redactions: [
+          ...new Set(
+            [login.password, encodeURIComponent(login.password)].concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            ),
+          ),
+        ],
+      };
+    }
   }
-  if (storedOrigin.protocol !== "https:") {
-    return { error: "Website logins can only be filled on an HTTPS origin." };
-  }
-  const destination = normalizeSecretDestination(row);
-  if (destination.auth.type !== "login") {
-    return { error: "This credential is not a website login." };
-  }
-  if (destination.origin !== storedOrigin.origin) {
-    return { error: "Website logins can only be filled on an HTTPS origin." };
-  }
-  const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
-  return {
-    text: login[input.field],
-    origin: destination.origin,
-    // Redaction is substring replacement, so a short username would mangle unrelated text.
-    redactions: [
-      ...new Set(
-        [login.password, encodeURIComponent(login.password)].concat(
-          login.username.length >= MIN_REDACTED_USERNAME
-            ? [login.username, encodeURIComponent(login.username)]
-            : [],
-        ),
-      ),
-    ],
-  };
+
+  return { error: "Login is unavailable. Use request_secret to save it first." };
 }

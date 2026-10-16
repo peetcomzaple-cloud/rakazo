@@ -8,6 +8,7 @@ export interface WebGoalState {
   lastActionOk?: boolean;
   lastActionError?: string;
   lastActionVerified?: boolean;
+  httpStatus?: number;
   initialUrl?: string;
   currentUrl?: string;
   currentTitle?: string;
@@ -30,6 +31,8 @@ export interface WebGoalState {
   windowsRemaining?: readonly { id: string; wmClass?: string; title?: string }[];
   targetWindowId?: string;
   targetWindowClass?: string;
+  challengeDetected?: boolean;
+  challengeType?: string;
 }
 
 /**
@@ -112,7 +115,7 @@ export function isLoginFormTask(prompt: string): boolean {
     return false;
   }
   const thaiLoginForm =
-    /(?:เปิดหน้ารอกรอก|ไปหน้า(?:ล็อกอิน|เข้าสู่ระบบ|ลงชื่อเข้าใช้|login|signin)|เข้าสู่ระบบ(?:ที่|\s*https?:)|ล็อกอิน(?:ที่|\s*https?:)|รอกรอก(?:เมล|รหัส|username|password)|เปิดหน้า\s*(?:sign\s*in|login))/i;
+    /(?:เปิดหน้ารอกรอก|เปิดหน้า(?:ล็อกอิน|เข้าสู่ระบบ|ลงชื่อเข้าใช้|sign\s*in|login)|ไปหน้า(?:ล็อกอิน|เข้าสู่ระบบ|ลงชื่อเข้าใช้|login|signin)|เข้าสู่ระบบ(?:ที่|\s*https?:)|ล็อกอิน(?:ที่|\s*https?:)|รอกรอก(?:เมล|รหัส|username|password)|รอ(?:ผม|ฉัน|เรา)?กรอก|เปิดหน้าไว้.*กรอกเอง|เปิดหน้า\s*(?:sign\s*in|login))/i;
   const engLoginForm =
     /\b(?:open|go\s+to|navigate\s+to|log\s*in\s+(?:to|at)|sign\s*in\s+(?:to|at))\s+(?:the\s+)?(?:login|signin|sign-in)?\s*(?:page|form|https?:|http:)?\b/i;
   return thaiLoginForm.test(normalized) || engLoginForm.test(normalized);
@@ -134,6 +137,23 @@ export function verifyWebGoal(
     return {
       ok: false,
       reason: `I stopped after reaching the limit of ${limit} tool calls in this turn. Send another message to continue.`,
+    };
+  }
+
+  // 1b. Active challenge / CAPTCHA on the page means the goal is blocked, never a success.
+  if (state.challengeDetected) {
+    return {
+      ok: false,
+      reason: `งานยังไม่สำเร็จ: ตรวจพบแบบทดสอบความปลอดภัย (${state.challengeType || "CAPTCHA"}) ที่ต้องให้ผู้ใช้ช่วยยืนยันบนหน้าจอ`,
+    };
+  }
+  if (
+    state.currentTitle &&
+    /(?:captcha|challenge|turnstile|hcaptcha|just a moment\.\.\.|security check)/i.test(state.currentTitle)
+  ) {
+    return {
+      ok: false,
+      reason: `งานยังไม่สำเร็จ: หน้าเว็บติดแบบทดสอบความปลอดภัย (${state.currentTitle})`,
     };
   }
 
@@ -252,6 +272,21 @@ export function verifyWebGoal(
   // Requesting to open the login page waiting for user to fill credentials requires reaching visible login form.
   // URL matching /login alone without a visible login form is rejected.
   if (isLoginFormTask(prompt)) {
+    if (state.httpStatus && state.httpStatus >= 400) {
+      return {
+        ok: false,
+        reason: `การเปิดหน้าล็อกอินไม่สำเร็จ: หน้าเว็บส่งกลับรหัสข้อผิดพลาด HTTP ${state.httpStatus}`,
+      };
+    }
+    if (
+      state.currentTitle &&
+      /(?:Error 400|Error 403|Error 404|Error 500|Bad Request)/i.test(state.currentTitle)
+    ) {
+      return {
+        ok: false,
+        reason: `การเปิดหน้าล็อกอินไม่สำเร็จ: พบหน้าข้อผิดพลาด ${state.currentTitle}`,
+      };
+    }
     if (state.activeModal) {
       return {
         ok: false,

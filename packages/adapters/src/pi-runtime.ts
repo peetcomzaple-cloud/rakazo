@@ -482,6 +482,10 @@ export class PiAgentRuntime implements AgentRuntime {
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
         let streamedBeforePendingFinal = 0;
+        const isThaiRun = Boolean(
+          (request.prompt && /[\u0E00-\u0E7F]/.test(request.prompt)) ||
+          (request.instructions && /[\u0E00-\u0E7F]/.test(request.instructions)),
+        );
         agent.subscribe(async (event) => {
           if (event.type === "message_end") {
             await piSession?.appendMessage(event.message);
@@ -494,7 +498,7 @@ export class PiAgentRuntime implements AgentRuntime {
             toolActivityShowing = true;
             queue.push({
               type: "progress",
-              text: describeToolActivity(event.toolName, event.args),
+              text: describeToolActivity(event.toolName, event.args, isThaiRun),
               activity: true,
             });
           }
@@ -870,7 +874,7 @@ export function normalizeAgentToolName(name: string): string {
 const ACTIVITY_DETAIL_LIMIT = 90;
 
 /** One human-readable line describing a tool call, shown live in the thread. */
-export function describeToolActivity(toolName: string, args: unknown): string {
+export function describeToolActivity(toolName: string, args: unknown, isThai = false): string {
   const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
   const detail = (value: unknown): string => {
     const text = sanitizeSensitiveText(String(value ?? ""))
@@ -878,6 +882,37 @@ export function describeToolActivity(toolName: string, args: unknown): string {
       .trim();
     return text.length > ACTIVITY_DETAIL_LIMIT ? `${text.slice(0, ACTIVITY_DETAIL_LIMIT)}…` : text;
   };
+  if (isThai) {
+    if (toolName === "shell") return `กำลังรันคำสั่ง: ${detail(record.command)}`;
+    if (toolName === "read_file") return `กำลังอ่านไฟล์: ${detail(record.path)}`;
+    if (toolName === "write_file") return `กำลังบันทึกไฟล์: ${detail(record.path)}`;
+    if (toolName === "list_files") return `กำลังสำรวจไฟล์: ${detail(record.path ?? ".")}`;
+    if (toolName === "attach_file") return `กำลังแนบไฟล์: ${detail(record.path)}`;
+    if (toolName === "open_path") return `กำลังเปิด: ${detail(record.path)}`;
+    if (toolName === "render_plot") return "กำลังสร้างแผนภูมิ";
+    if (toolName === "add_mcp_server") return `กำลังเชื่อมต่อ MCP: ${detail(record.name)}`;
+    if (toolName === "computer_observe") return "กำลังตรวจดูหน้าจอ";
+    if (toolName === "browser_navigate") {
+      const url = String(record.url ?? "");
+      if (/gmail|mail\.google/i.test(url)) return "กำลังเปิดอีเมล";
+      return `กำลังเปิดหน้าเว็บ: ${detail(redactActivityUrl(record.url))}`;
+    }
+    if (toolName === "browser_snapshot") return "กำลังอ่านข้อมูลหน้าเว็บ";
+    if (toolName === "browser_act") return "กำลังทำงานบนหน้าเว็บ";
+    if (toolName === "computer_act") return "กำลังสั่งการบนหน้าจอ";
+    if (toolName === "run_subagent") return `กำลังส่งต่อให้บอตผู้ช่วย: ${detail(record.name)}`;
+    if (toolName === "create_space") return `กำลังสร้างสเปซ: ${detail(record.name)}`;
+    if (toolName === "remember") return "กำลังบันทึกความจำ";
+    if (toolName === "save_shared_memory") return `กำลังบันทึกความจำร่วม: ${detail(record.path)}`;
+    if (toolName === "web_search") return `กำลังค้นหาข้อมูล: ${detail(record.query)}`;
+    if (toolName === "web_fetch") return `กำลังอ่านหน้าเว็บ: ${detail(redactActivityUrl(record.url))}`;
+    if (toolName === "request_secret") return "รอคุณกรอกข้อมูลเข้าสู่ระบบ";
+    if (toolName === "request_takeover") return "รอคุณช่วยดำเนินการบนหน้าจอ";
+    if (toolName === "browser_reconnect") return "กำลังเชื่อมต่อเบราว์เซอร์อีกครั้ง";
+    const mcp = toolName.match(/^mcp__(.+?)__(.+)$/);
+    if (mcp) return `กำลังใช้งาน ${mcp[1]}: ${mcp[2]}`;
+    return `กำลังใช้งาน ${toolName}`;
+  }
   if (toolName === "shell") return `Running: ${detail(record.command)}`;
   if (toolName === "read_file") return `Reading ${detail(record.path)}`;
   if (toolName === "write_file") return `Writing ${detail(record.path)}`;
@@ -1030,8 +1065,17 @@ function withoutSteeringMessages(
  * are not dropped the same way.
  */
 export function prepareRequestSecretArguments(raw: Record<string, unknown>) {
-  const label = raw.label == null ? "" : String(raw.label);
-  const purpose = raw.purpose == null ? "" : String(raw.purpose);
+  const label =
+    raw.label != null && String(raw.label).trim()
+      ? String(raw.label).trim()
+      : raw.question != null && String(raw.question).trim()
+        ? String(raw.question).trim()
+        : raw.prompt != null && String(raw.prompt).trim()
+          ? String(raw.prompt).trim()
+          : raw.message != null && String(raw.message).trim()
+            ? String(raw.message).trim()
+            : "";
+  const purpose = raw.purpose == null ? "" : String(raw.purpose).trim();
   if (!label.trim() || !purpose.trim()) {
     throw new Error(
       `request_secret requires a non-empty label and purpose (received: ${
@@ -1039,11 +1083,23 @@ export function prepareRequestSecretArguments(raw: Record<string, unknown>) {
       })`,
     );
   }
+  let origin: string | undefined;
+  if (purpose === "login" && raw.origin != null && String(raw.origin).trim()) {
+    try {
+      const parsed = new URL(String(raw.origin));
+      if (parsed.protocol === "https:") {
+        origin = parsed.origin;
+      }
+    } catch {
+      origin = undefined;
+    }
+  }
   const credential = credentialArgument(raw);
   const connectionId = connectionIdArgument(raw.connectionId);
   return {
     label,
     purpose,
+    ...(origin !== undefined ? { origin } : {}),
     ...(connectionId ? { connectionId } : {}),
     ...(credential !== undefined ? { credential } : {}),
     ...(raw.replace === true ? { replace: true } : {}),

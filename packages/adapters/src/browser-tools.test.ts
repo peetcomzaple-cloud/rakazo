@@ -93,7 +93,7 @@ describe("browser tools", () => {
       parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "pin" }]),
     ).toThrow(/username or password/);
     expect(() =>
-      parseBrowserActions([{ kind: "fill_secret", ref: "e1", field: "password" }]),
+      parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "", field: "password" }]),
     ).toThrow(/secret/);
   });
 

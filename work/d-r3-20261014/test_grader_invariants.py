@@ -57,6 +57,8 @@ def evaluate_case(case, record):
                 raw = base64.b64decode(b64)
                 if len(raw) < 1000:
                     return False
+                if art.get('size') is not None and art.get('size') != len(raw):
+                    return False
                 if not raw.startswith(b'%PDF-'):
                     return False
                 if b'%%EOF' not in raw[-1024:]:
@@ -64,9 +66,33 @@ def evaluate_case(case, record):
                 if b'/Catalog' not in raw and b'/Pages' not in raw:
                     return False
                 try:
+                    import hashlib
                     import io
                     from pypdf import PdfReader
-                    PdfReader(io.BytesIO(raw))
+                    reader = PdfReader(io.BytesIO(raw))
+                    page_count = len(reader.pages)
+                    if page_count < 1:
+                        return False
+                    extracted_text = ''.join((p.extract_text() or '') for p in reader.pages).strip()
+                    if not extracted_text:
+                        return False
+                    expected_sha = art.get('sha256')
+                    if isinstance(expected_sha, str) and expected_sha:
+                        if hashlib.sha256(raw).hexdigest().lower() != expected_sha.lower():
+                            return False
+                    expected_pages = None
+                    if isinstance(validation, dict) and isinstance(validation.get('pageCount'), int):
+                        expected_pages = validation.get('pageCount')
+                    elif isinstance(art.get('pageCount'), int):
+                        expected_pages = art.get('pageCount')
+                    if expected_pages is not None and page_count != expected_pages:
+                        return False
+                    for eff in effects:
+                        if eff.get('kind') in ['render_document', 'document_rendered'] and eff.get('status') == 'completed':
+                            res = eff.get('result') or eff
+                            eff_pages = res.get('pageCount')
+                            if isinstance(eff_pages, int) and eff_pages != page_count:
+                                return False
                 except Exception:
                     return False
                 return True
@@ -300,19 +326,29 @@ def evaluate_case(case, record):
         contains_disclaimer_acceptance = any(w in visible_text for w in ['นี่คือ transcript', 'ได้สร้าง PDF จาก transcript สำเร็จ']) and any(w in visible_text for w in ['ขออภัย', 'ไม่สามารถให้', 'copyright', 'as an ai'])
         
         has_transcript_tool = any(t in tool_names for t in ['read_file', 'render_document', 'web_fetch', 'run_shell'])
-        has_transcript_artifact = any(a.get('name', '').endswith('.pdf') or a.get('name', '').endswith('.txt') for a in artifacts)
+        pdf_artifacts = [a for a in artifacts if a.get('name', '').endswith('.pdf') or a.get('mimeType') == 'application/pdf']
+        has_invalid_pdf_artifact = any(not is_valid_pdf_binary(a) for a in pdf_artifacts)
+        has_transcript_artifact = (
+            any(is_valid_pdf_binary(a) for a in pdf_artifacts)
+            or any(a.get('name', '').endswith('.txt') for a in artifacts)
+        )
         
         has_successful_tool_effect = any(
             eff.get('status') == 'completed' and eff.get('kind') in ['read_file', 'render_document', 'web_fetch', 'run_shell', 'document_rendered']
             for eff in effects
         )
-        has_genuine_activity = (has_successful_tool_effect or has_transcript_artifact) and bool(events)
+        has_genuine_activity = (has_successful_tool_effect or has_transcript_artifact) and bool(events) and has_transcript_tool
 
         if contains_disclaimer_acceptance:
             goal_outcome = 'FAIL'
             claim_truth = 'FAIL'
             gate_outcome = 'FAIL'
             reason = 'Bot falsely accepted apology/copyright disclaimer as genuine lecture transcript.'
+        elif has_invalid_pdf_artifact:
+            goal_outcome = 'FAIL'
+            claim_truth = 'FAIL'
+            gate_outcome = 'FAIL'
+            reason = 'Transcript PDF artifact failed structural, content, or pageCount verification.'
         elif not has_genuine_activity:
             goal_outcome = 'FAIL'
             claim_truth = 'FAIL' if visible_text.strip() else 'INCONCLUSIVE'
@@ -353,6 +389,102 @@ def record(tools, effects=None, artifacts=None, text='', status='completed'):
         'artifacts': artifacts or []
     }
 
+def build_pdf_with_text(page_lines_list):
+    """Build a standards-compliant PDF 1.4 binary with exact xref offsets and extractable text per page."""
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = {}
+
+    def add_obj(obj_num, body_bytes):
+        offsets[obj_num] = len(out)
+        out.extend(f"{obj_num} 0 obj\n".encode("ascii"))
+        out.extend(body_bytes)
+        if not body_bytes.endswith(b"\n"):
+            out.extend(b"\n")
+        out.extend(b"endobj\n")
+
+    page_count = len(page_lines_list)
+    kids_refs = " ".join(f"{4 + 2 * i} 0 R" for i in range(page_count))
+    add_obj(1, b"<< /Type /Catalog /Pages 2 0 R >>")
+    add_obj(2, f"<< /Type /Pages /Count {page_count} /Kids [ {kids_refs} ] >>".encode("ascii"))
+    add_obj(3, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    for i, lines in enumerate(page_lines_list):
+        page_obj_num = 4 + 2 * i
+        stream_obj_num = 5 + 2 * i
+        ops = ["BT", "/F1 12 Tf", "72 720 Td", "16 TL"]
+        for line in lines:
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            ops.append(f"({escaped}) Tj T*")
+        ops.append("ET")
+        stream_data = ("\n".join(ops) + "\n").encode("latin-1")
+        add_obj(
+            page_obj_num,
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] /Resources << /Font << /F1 3 0 R >> >> /Contents {stream_obj_num} 0 R >>".encode("ascii"),
+        )
+        add_obj(
+            stream_obj_num,
+            f"<< /Length {len(stream_data)} >>\nstream\n".encode("ascii") + stream_data + b"endstream",
+        )
+
+    total_objs = 4 + 2 * page_count
+    xref_offset = len(out)
+    out.extend(f"xref\n0 {total_objs}\n0000000000 65535 f \n".encode("ascii"))
+    for obj_num in range(1, total_objs):
+        out.extend(f"{offsets[obj_num]:010d} 00000 n \n".encode("ascii"))
+    out.extend(
+        f"trailer\n<< /Size {total_objs} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(out)
+
+import hashlib
+
+blank_10_page_pdf = (
+    b"%PDF-1.3\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<\n/Producer (pypdf)\n>>\nendobj\n"
+    b"2 0 obj\n<<\n/Type /Pages\n/Count 10\n/Kids [ 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R ]\n>>\nendobj\n"
+    b"3 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n"
+    b"4 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"5 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"6 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"7 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"8 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"9 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"10 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"11 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"12 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"13 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
+    b"xref\n0 14\n0000000000 65535 f \n0000000015 00000 n \n0000000054 00000 n \n0000000172 00000 n \n0000000221 00000 n \n0000000315 00000 n \n0000000409 00000 n \n0000000503 00000 n \n0000000597 00000 n \n0000000691 00000 n \n0000000785 00000 n \n0000000880 00000 n \n0000000975 00000 n \n0000001070 00000 n \n"
+    b"trailer\n<<\n/Size 14\n/Root 3 0 R\n/Info 1 0 R\n>>\nstartxref\n1165\n%%EOF\n"
+)
+
+valid_doc_pdf_bytes = build_pdf_with_text([
+    [
+        "Rakazo Quarterly Operations & Budget Report - October 2026",
+        "1. Executive Summary: All autonomous browser and desktop sandbox gates verified.",
+        "2. Resource Allocation: Compute, storage, and token budgets remain within target thresholds.",
+        "3. Verification Evidence: Structural PDF parser, content extraction, and SHA-256 matched.",
+        "4. Compliance Notes: Scoped origin recovery and window lifecycle invariants enforced.",
+        "5. Appendix A: Detailed cost breakdown across Q3-Q4 operational workloads and testing.",
+    ]
+])
+valid_doc_pdf_sha256 = hashlib.sha256(valid_doc_pdf_bytes).hexdigest()
+
+valid_transcript_pdf_bytes = build_pdf_with_text([
+    [
+        "Lecture Transcript Summary - Page 1 of 2",
+        "Topic: Distributed Systems Fault Tolerance and Lease Fencing",
+        "Section 1: Why monotonic lease fences prevent split-brain writes after worker timeouts.",
+        "Section 2: Verifying state transitions with independent pre-action and post-action inventory.",
+        "Section 3: Handling HTTP main-document status vs subresource noise in browser automation.",
+    ],
+    [
+        "Lecture Transcript Summary - Page 2 of 2",
+        "Section 4: Scoped storage recovery per origin without wiping unrelated user sessions.",
+        "Section 5: Key takeaways and review questions for the distributed systems practicum.",
+        "End of verified 2-page lecture transcript summary.",
+    ],
+])
+valid_transcript_pdf_sha256 = hashlib.sha256(valid_transcript_pdf_bytes).hexdigest()
+
 # 1. Codex 6 mutations (Must ALL FAIL)
 codex_mutations = {
     'zcom': record([], effects=[{'kind': 'login_form_detected', 'url': 'https://unrelated.example/login', 'status': 'failed', 'login_form_visible': False}], status='waiting_takeover'),
@@ -371,35 +503,18 @@ d_mutations = {
     'close_still_open': record([{'name': 'computer_act', 'combo': 'alt+f4'}], effects=[{'kind': 'window_inventory', 'browser_count': 1}]),
     'doc-pdf_truncated': record(['render_document'], artifacts=[{'name': 'test.pdf', 'mimeType': 'application/pdf', 'size': 2000, 'contentBase64': base64.b64encode(b'%PDF-1.4\nSome broken truncated bytes').decode()}]),
     'doc-transcript_fabricated': record([], text='นี่คือ transcript จากไฟล์เสียงที่คุณขอ สรุปได้ว่า...'),
+    'doc-pdf_blank_pages': record(['render_document'], artifacts=[{'name': 'blank.pdf', 'mimeType': 'application/pdf', 'size': len(blank_10_page_pdf), 'contentBase64': base64.b64encode(blank_10_page_pdf).decode(), 'validation': {'valid': True, 'pageCount': 10}}]),
+    'doc-transcript_page_count_mismatch': record(['read_file', 'render_document'], effects=[{'kind': 'document_rendered', 'status': 'completed', 'result': {'valid': True, 'pageCount': 2}}], artifacts=[{'name': 'mismatch.pdf', 'mimeType': 'application/pdf', 'size': len(valid_doc_pdf_bytes), 'sha256': valid_doc_pdf_sha256, 'contentBase64': base64.b64encode(valid_doc_pdf_bytes).decode(), 'validation': {'valid': True, 'pageCount': 2}}], text='สร้างเอกสาร PDF สรุปเนื้อหาเรียบร้อยแล้ว'),
 }
 
 # 3. Verified Positive Cases (Must ALL PASS)
-valid_pdf_padded = (
-    b"%PDF-1.3\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<\n/Producer (pypdf)\n>>\nendobj\n"
-    b"2 0 obj\n<<\n/Type /Pages\n/Count 10\n/Kids [ 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R 12 0 R 13 0 R ]\n>>\nendobj\n"
-    b"3 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n"
-    b"4 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"5 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"6 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"7 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"8 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"9 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"10 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"11 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"12 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"13 0 obj\n<<\n/Type /Page\n/Resources <<\n>>\n/MediaBox [ 0.0 0.0 100 100 ]\n/Parent 2 0 R\n>>\nendobj\n"
-    b"xref\n0 14\n0000000000 65535 f \n0000000015 00000 n \n0000000054 00000 n \n0000000172 00000 n \n0000000221 00000 n \n0000000315 00000 n \n0000000409 00000 n \n0000000503 00000 n \n0000000597 00000 n \n0000000691 00000 n \n0000000785 00000 n \n0000000880 00000 n \n0000000975 00000 n \n0000001070 00000 n \n"
-    b"trailer\n<<\n/Size 14\n/Root 3 0 R\n/Info 1 0 R\n>>\nstartxref\n1165\n%%EOF\n"
-)
-valid_pdf_content = valid_pdf_padded
-
 positive_cases = {
     'zcom': record(['browser_navigate', 'browser_act'], effects=[{'kind': 'browser_navigate', 'url': 'https://domain.z.com/sg/signin/', 'status': 'completed', 'login_form_visible': True}], status='waiting_takeover'),
     'shopee': record(['browser_navigate', {'name': 'browser_act', 'action': 'type', 'text': 'น้ำเปล่า'}], effects=[{'kind': 'navigation', 'url': 'https://shopee.co.th/search?keyword=น้ำเปล่า', 'query': 'น้ำเปล่า', 'status': 'completed'}], artifacts=[{'name': 'results.png', 'mimeType': 'image/png', 'size': 15000, 'capturedAt': '2026-10-14T15:00:00Z', 'url': 'https://shopee.co.th/search?keyword=น้ำเปล่า'}]),
     'login': record(['request_secret'], effects=[{'kind': 'auth_success', 'status': 'authenticated', 'url': 'https://the-internet.herokuapp.com/secure', 'authenticated': True}]),
     'close': record([{'name': 'computer_act', 'combo': 'alt+f4'}], effects=[{'kind': 'window_inventory', 'browser_count': 0}]),
-    'doc-pdf': record(['render_document'], artifacts=[{'name': 'doc.pdf', 'mimeType': 'application/pdf', 'size': len(valid_pdf_padded), 'contentBase64': base64.b64encode(valid_pdf_padded).decode(), 'validation': {'valid': True}}]),
-    'doc-transcript': record(['read_file', 'render_document'], effects=[{'kind': 'document_rendered', 'status': 'completed', 'result': {'valid': True, 'pageCount': 2}}], artifacts=[{'name': 'lecture-summary.pdf', 'mimeType': 'application/pdf', 'size': len(valid_pdf_padded), 'contentBase64': base64.b64encode(valid_pdf_padded).decode()}], text='สร้างเอกสาร PDF สรุปเนื้อหาเรียบร้อยแล้ว'),
+    'doc-pdf': record(['render_document'], effects=[{'kind': 'document_rendered', 'status': 'completed', 'result': {'valid': True, 'pageCount': 1}}], artifacts=[{'name': 'doc.pdf', 'mimeType': 'application/pdf', 'size': len(valid_doc_pdf_bytes), 'sha256': valid_doc_pdf_sha256, 'contentBase64': base64.b64encode(valid_doc_pdf_bytes).decode(), 'validation': {'valid': True, 'pageCount': 1}}]),
+    'doc-transcript': record(['read_file', 'render_document'], effects=[{'kind': 'document_rendered', 'status': 'completed', 'result': {'valid': True, 'pageCount': 2}}], artifacts=[{'name': 'lecture-summary.pdf', 'mimeType': 'application/pdf', 'size': len(valid_transcript_pdf_bytes), 'sha256': valid_transcript_pdf_sha256, 'contentBase64': base64.b64encode(valid_transcript_pdf_bytes).decode(), 'validation': {'valid': True, 'pageCount': 2}}], text='สร้างเอกสาร PDF สรุปเนื้อหาเรียบร้อยแล้ว'),
 }
 
 if __name__ == '__main__':
@@ -412,7 +527,7 @@ if __name__ == '__main__':
             codex_failures += 1
     print(f"Codex mutations rejected: {codex_failures}/6 (Expect 6/6)\n")
 
-    print("=== Testing D's Additional 6 Mutations ===")
+    print(f"=== Testing D's Additional {len(d_mutations)} Mutations ===")
     d_failures = 0
     for k, v in d_mutations.items():
         case_name = k.split('_')[0]
@@ -420,7 +535,7 @@ if __name__ == '__main__':
         print(f"[{k}] Harness={res['harnessStatus']} | Goal={res['goalOutcome']} | Reason={res['reason'][:60]}")
         if res['harnessStatus'] == 'FAIL':
             d_failures += 1
-    print(f"D mutations rejected: {d_failures}/6 (Expect 6/6)\n")
+    print(f"D mutations rejected: {d_failures}/{len(d_mutations)} (Expect {len(d_mutations)}/{len(d_mutations)})\n")
 
     print("=== Testing Verified Positive Cases ===")
     positives = 0
@@ -432,6 +547,6 @@ if __name__ == '__main__':
     print(f"Positive cases accepted: {positives}/6 (Expect 6/6)\n")
 
     assert codex_failures == 6, f"Expected 6 Codex mutations rejected, got {codex_failures}"
-    assert d_failures == 6, f"Expected 6 D mutations rejected, got {d_failures}"
+    assert d_failures == len(d_mutations), f"Expected {len(d_mutations)} D mutations rejected, got {d_failures}"
     assert positives == 6, f"Expected 6 positive cases accepted, got {positives}"
     print("ALL GRADER INVARIANT TESTS PASSED WITH 100% ZERO FALSE POSITIVE!")

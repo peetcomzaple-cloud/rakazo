@@ -1,5 +1,5 @@
 import type { ComputerAction, ComputerObservation } from "@rakazo/adapter-kit";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isPointerClickAction,
   isKeyboardSubmitAction,
@@ -7,6 +7,8 @@ import {
   isWindowClosed,
   verifyWindowCloseEvidence,
   sanitizeScreenIdentity,
+  isSameScreenGeneration,
+  sanitizeWebScreenIdentity,
   observationToolResult,
   parseComputerActions,
   type ExtendedComputerObservation,
@@ -17,18 +19,14 @@ import {
   ensureScreenCommand,
   launchBrowserCommand,
   stopBrowserCommand,
-} from "../../core/src/node/desktop-runtime.js";
-import {
-  isSameScreenGeneration,
-  sanitizeWebScreenIdentity,
-} from "../../../apps/web/src/lib/computer-screen.js";
+} from "@rakazo/core/node/desktop-runtime";
 
 describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
   describe("1. View/observe decoupling from browser launch", () => {
     it("ensureScreenCommand prepares Xvfb, fluxbox, and VNC gateway without launching Chromium or polling CDP", () => {
       // For secondary screens (index >= 1), Xvfb and fluxbox are launched
       const command = ensureScreenCommand(1, "bot-beta", "secret_view_token_123");
-      
+
       // Transport components must be present
       expect(command).toContain("Xvfb");
       expect(command).toContain("fluxbox");
@@ -58,6 +56,12 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
 
   describe("2. Window inventory tri-state & close evidence verification", () => {
     const targetWid = "0x01a00003";
+    beforeEach(() => {
+      vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T03:00:02Z"));
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
 
     it("unreadable / unknown window inventory never concludes window is closed", () => {
       // When inventory status is unknown (e.g. wmctrl failed/timeout), isWindowClosed must return false
@@ -96,20 +100,32 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
       const beforeObs: ExtendedComputerObservation = {
         frameId: "frame-1",
         capturedAt: "2026-10-14T03:00:00Z",
+        windowInventoryFreshness: "2026-10-14T03:00:00Z",
+        screenIdentity: {
+          computerId: "computer-test",
+          display: ":1",
+          generation: 1,
+          profileFingerprint: "profile-test",
+        },
         width: 1280,
         height: 800,
         mimeType: "image/png",
         image: new Uint8Array([0]),
         activeWindow: { id: targetWid, title: "Google - Chromium" },
         windowInventoryStatus: "validnonempty",
-        windows: [
-          { id: targetWid, title: "Google - Chromium", isCurrentProfile: true },
-        ],
+        windows: [{ id: targetWid, title: "Google - Chromium", isCurrentProfile: true }],
       };
 
       const afterObs: ExtendedComputerObservation = {
         frameId: "frame-2",
         capturedAt: "2026-10-14T03:00:01Z",
+        windowInventoryFreshness: "2026-10-14T03:00:01Z",
+        screenIdentity: {
+          computerId: "computer-test",
+          display: ":1",
+          generation: 1,
+          profileFingerprint: "profile-test",
+        },
         width: 1280,
         height: 800,
         mimeType: "image/png",
@@ -163,6 +179,13 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
       const beforeObs: ExtendedComputerObservation = {
         frameId: "frame-1",
         capturedAt: "2026-10-14T03:00:00Z",
+        windowInventoryFreshness: "2026-10-14T03:00:00Z",
+        screenIdentity: {
+          computerId: "computer-test",
+          display: ":1",
+          generation: 1,
+          profileFingerprint: "profile-test",
+        },
         width: 1280,
         height: 800,
         mimeType: "image/png",
@@ -179,6 +202,13 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
       const afterObsKilledAll: ExtendedComputerObservation = {
         frameId: "frame-2",
         capturedAt: "2026-10-14T03:00:01Z",
+        windowInventoryFreshness: "2026-10-14T03:00:01Z",
+        screenIdentity: {
+          computerId: "computer-test",
+          display: ":1",
+          generation: 1,
+          profileFingerprint: "profile-test",
+        },
         width: 1280,
         height: 800,
         mimeType: "image/png",
@@ -196,7 +226,9 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
 
       expect(result.verified).toBe(false);
       expect(result.preservedOtherWindows).toBe(false);
-      expect(result.reason).toContain("Safety check failed: window 0x02b00004 belonging to another profile was closed");
+      expect(result.reason).toContain(
+        "Safety check failed: window 0x02b00004 belonging to another profile was closed",
+      );
     });
   });
 
@@ -243,7 +275,7 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
           generation: 1,
           profileFingerprint: "abc1234567890123",
           browserClosed: false,
-          ...( { viewToken: "LEAKED_TOKEN" } as Record<string, unknown> ),
+          ...({ viewToken: "LEAKED_TOKEN" } as Record<string, unknown>),
         },
         windowInventoryStatus: "validnonempty",
         windowInventoryFreshness: "2026-10-14T03:30:00Z",
@@ -251,15 +283,17 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
       };
 
       const result = observationToolResult(obs);
-      expect(result.details.frameId).toBe("frame-1-100");
-      expect(result.details.windowInventoryStatus).toBe("validnonempty");
-      expect(result.details.windowInventoryFreshness).toBe("2026-10-14T03:30:00Z");
+      const details = result.details as Record<string, unknown>;
+      expect(details.frameId).toBe("frame-1-100");
+      expect(details.windowInventoryStatus).toBe("validnonempty");
+      expect(details.windowInventoryFreshness).toBe("2026-10-14T03:30:00Z");
 
-      const identity = result.details.screenIdentity as Record<string, unknown>;
+      const identity = details.screenIdentity as Record<string, unknown>;
       expect(identity.viewToken).toBeUndefined();
 
       // Check text content as well
-      const text = result.content[0].type === "text" ? result.content[0].text : "";
+      const firstPart = result.content[0];
+      const text = firstPart && firstPart.type === "text" ? firstPart.text : "";
       expect(text).not.toContain("LEAKED_TOKEN");
     });
 
@@ -273,7 +307,7 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
 
       const webClean = sanitizeWebScreenIdentity({
         ...a,
-        ...( { viewToken: "secret" } as Record<string, unknown> ),
+        ...({ viewToken: "secret" } as Record<string, unknown>),
       });
       expect(webClean).toBeDefined();
       expect((webClean as Record<string, unknown>).viewToken).toBeUndefined();
@@ -282,16 +316,16 @@ describe("Rakazo ROUND3 Owner C: Screen lifecycle & browser separation", () => {
 
   describe("4. Normalized pointer click and action shape recognition", () => {
     it("parseComputerActions normalizes click into pointer shape", () => {
-      const parsed = parseComputerActions([
-        { kind: "click", x: 640, y: 400, button: "left" },
-      ]);
+      const parsed = parseComputerActions([{ kind: "click", x: 640, y: 400, button: "left" }]);
 
       expect(parsed).toHaveLength(1);
-      const action = parsed[0];
+      const action = parsed[0]!;
       expect(action.kind).toBe("pointer");
-      expect(action.type).toBe("click");
-      expect(action.x).toBe(640);
-      expect(action.y).toBe(400);
+      if (action.kind === "pointer") {
+        expect(action.type).toBe("click");
+        expect(action.x).toBe(640);
+        expect(action.y).toBe(400);
+      }
     });
 
     it("isPointerClickAction recognizes both normalized { kind: 'pointer', type: 'click' } and legacy { kind: 'click' }", () => {

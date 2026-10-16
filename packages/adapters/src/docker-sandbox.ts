@@ -363,6 +363,75 @@ export class DockerSandboxProvider implements SandboxProvider {
     }
   }
 
+  private buildObservation(
+    computer: ComputerRef,
+    context: AdapterContext,
+    raw: {
+      image: string;
+      mimeType: "image/png" | "image/jpeg";
+      width: number;
+      height: number;
+      frameId?: string;
+      capturedAt?: string;
+      cursor?: { x: number; y: number };
+      activeWindow?: ComputerObservation["activeWindow"];
+      display?: string;
+      screenIdentity?: ComputerObservation["screenIdentity"];
+      windowInventoryStatus?: ComputerObservation["windowInventoryStatus"];
+      windowInventoryFreshness?: string;
+      windows?: ComputerObservation["windows"];
+    },
+  ): ComputerObservation {
+    const screenId = context.botId ?? computer.botId;
+    const display = raw.display ?? raw.screenIdentity?.display ?? ":1";
+    const parsedFence = context.screenLeaseId?.includes(":")
+      ? Number(context.screenLeaseId.slice(context.screenLeaseId.lastIndexOf(":") + 1))
+      : undefined;
+    const fence =
+      raw.screenIdentity?.fence ??
+      (parsedFence !== undefined && Number.isSafeInteger(parsedFence) && parsedFence >= 0
+        ? parsedFence
+        : undefined);
+    const screenIdentity: NonNullable<ComputerObservation["screenIdentity"]> = {
+      ...raw.screenIdentity,
+      computerId: raw.screenIdentity?.computerId ?? computer.id,
+      botId: raw.screenIdentity?.botId ?? computer.botId,
+      screenId: raw.screenIdentity?.screenId ?? screenId,
+      display,
+      generation:
+        typeof raw.screenIdentity?.generation === "number" &&
+        Number.isSafeInteger(raw.screenIdentity.generation) &&
+        raw.screenIdentity.generation >= 0
+          ? raw.screenIdentity.generation
+          : 1,
+      profileFingerprint: raw.screenIdentity?.profileFingerprint ?? screenId,
+      ...(raw.screenIdentity?.profile ? { profile: raw.screenIdentity.profile } : {}),
+      ...(context.runId ?? raw.screenIdentity?.runId
+        ? { runId: context.runId ?? raw.screenIdentity?.runId }
+        : {}),
+      ...(context.screenLeaseId ?? raw.screenIdentity?.leaseId
+        ? { leaseId: context.screenLeaseId ?? raw.screenIdentity?.leaseId }
+        : {}),
+      ...(fence !== undefined ? { fence } : {}),
+    };
+    return computerObservation(Uint8Array.from(Buffer.from(raw.image, "base64")), {
+      mimeType: raw.mimeType,
+      width: raw.width,
+      height: raw.height,
+      ...(raw.frameId ? { frameId: raw.frameId } : {}),
+      ...(raw.capturedAt ? { capturedAt: raw.capturedAt } : {}),
+      cursor: raw.cursor,
+      activeWindow: raw.activeWindow,
+      display,
+      screenIdentity,
+      ...(raw.windowInventoryStatus ? { windowInventoryStatus: raw.windowInventoryStatus } : {}),
+      ...(raw.windowInventoryFreshness
+        ? { windowInventoryFreshness: raw.windowInventoryFreshness }
+        : {}),
+      ...(raw.windows ? { windows: raw.windows } : {}),
+    });
+  }
+
   async observe(computer: ComputerRef, context: AdapterContext): Promise<ComputerObservation> {
     const res = await fetch(this.url(`/computers/${computer.id}/observe`), {
       method: "POST",
@@ -378,16 +447,17 @@ export class DockerSandboxProvider implements SandboxProvider {
       mimeType: "image/png" | "image/jpeg";
       width: number;
       height: number;
+      frameId?: string;
+      capturedAt?: string;
       cursor?: { x: number; y: number };
-      activeWindow?: { id: string; title?: string };
+      activeWindow?: ComputerObservation["activeWindow"];
+      display?: string;
+      screenIdentity?: ComputerObservation["screenIdentity"];
+      windowInventoryStatus?: ComputerObservation["windowInventoryStatus"];
+      windowInventoryFreshness?: string;
+      windows?: ComputerObservation["windows"];
     }>(res, context.signal);
-    return computerObservation(Uint8Array.from(Buffer.from(body.image, "base64")), {
-      mimeType: body.mimeType,
-      width: body.width,
-      height: body.height,
-      cursor: body.cursor,
-      activeWindow: body.activeWindow,
-    });
+    return this.buildObservation(computer, context, body);
   }
 
   async act(computer: ComputerRef, request: ComputerActionRequest, context: AdapterContext) {
@@ -413,18 +483,22 @@ export class DockerSandboxProvider implements SandboxProvider {
         mimeType: "image/png" | "image/jpeg";
         width: number;
         height: number;
+        frameId?: string;
+        capturedAt?: string;
         cursor?: { x: number; y: number };
-        activeWindow?: { id: string; title?: string };
+        activeWindow?: ComputerObservation["activeWindow"];
+        display?: string;
+        screenIdentity?: ComputerObservation["screenIdentity"];
+        windowInventoryStatus?: ComputerObservation["windowInventoryStatus"];
+        windowInventoryFreshness?: string;
+        windows?: ComputerObservation["windows"];
       };
     }>(res, context.signal);
     return {
       completed: body.completed,
       ...(body.observation
         ? {
-            observation: computerObservation(
-              Uint8Array.from(Buffer.from(body.observation.image, "base64")),
-              body.observation,
-            ),
+            observation: this.buildObservation(computer, context, body.observation),
           }
         : {}),
     };

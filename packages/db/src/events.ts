@@ -126,7 +126,12 @@ export type FinalizeRunInput = FinalizeRunBase &
         blocks: MessageBlock[];
         markUnread?: boolean;
       }
-    | { outcome: "failed"; error: string }
+    | {
+        outcome: "failed";
+        error: string;
+        blocks?: MessageBlock[];
+        markUnread?: boolean;
+      }
   );
 
 export interface PauseRunForInput {

@@ -107,7 +107,7 @@ describe("output-contract", () => {
     const result = validatePolicyDecisions(items);
     expect(result.ok).toBe(true);
     expect(result.repaired).toBe(true);
-    expect(result.data[0].decision).toBe("DENY"); // Repaired to DENY!
+    expect(result.data[0]!.decision).toBe("DENY"); // Repaired to DENY!
   });
 
   it("metamorphic policy validation works with arbitrary people and dates without hardcoding fixture names", () => {
@@ -130,8 +130,8 @@ describe("output-contract", () => {
 
     const result = validatePolicyDecisions(items, { expectedPersons: ["Alice", "Bob"] });
     expect(result.ok).toBe(true);
-    expect(result.data[0].decision).toBe("ALLOW");
-    expect(result.data[1].decision).toBe("DENY");
+    expect(result.data[0]!.decision).toBe("ALLOW");
+    expect(result.data[1]!.decision).toBe("DENY");
   });
 
   it("returns typed failure when required field is missing", () => {

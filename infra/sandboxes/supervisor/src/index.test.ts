@@ -831,6 +831,48 @@ describe("sandbox supervisor input containment", () => {
       cursor: { x: 12, y: 34 },
       activeWindow: { id: "99", title: "Browser" },
     });
+    expect(
+      parseObservation(
+        [
+          "DISPLAY :1",
+          "INVENTORY_TS 2026-10-16T10:00:00.100Z",
+          "INVENTORY_STATUS validnonempty",
+          'WINDOWS_JSON [{"id":"0x01400003","wmClass":"chromium.Chromium","isCurrentProfile":true,"pid":1234,"title":"Example"}]',
+          "GEOM 1280 800",
+          "CURSOR X=12 Y=34 SCREEN=0 WINDOW=20971523",
+          "WINDOW 20971523",
+          "TITLE Example",
+          "IMAGE AQID",
+          "CAPTURED_AT 2026-10-16T10:00:00.200Z",
+        ].join("\n"),
+      ),
+    ).toEqual({
+      image: "AQID",
+      mimeType: "image/png",
+      width: 1280,
+      height: 800,
+      display: ":1",
+      capturedAt: "2026-10-16T10:00:00.200Z",
+      windowInventoryStatus: "validnonempty",
+      windowInventoryFreshness: "2026-10-16T10:00:00.100Z",
+      windows: [
+        {
+          id: "0x01400003",
+          wmClass: "chromium.Chromium",
+          isCurrentProfile: true,
+          pid: 1234,
+          title: "Example",
+        },
+      ],
+      cursor: { x: 12, y: 34 },
+      activeWindow: {
+        id: "0x01400003",
+        title: "Example",
+        wmClass: "chromium.Chromium",
+        pid: 1234,
+        isCurrentProfile: true,
+      },
+    });
     expect(() => parseObservation("GEOM 1280 800\nIMAGE ")).toThrow(/no image/);
   });
 });
@@ -947,7 +989,6 @@ describe("computer command identity", () => {
       );
     expect(route("/computers/:id/exec")).toContain("computerCommandEnv(layout)");
     expect(route("/computers/:id/terminal")).toContain("computerCommandEnv(screen.layout)");
-  });
   });
 });
 

@@ -249,6 +249,43 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "browser_clear_origin_storage",
+    description:
+      "Clear browser cookies and site storage for a single HTTP(S) origin when an OAuth/login flow is stuck in a corrupt state (e.g. HTTP 400 Bad Request on internal flow URLs) after returning to the service entry point. Scoped strictly to the target origin; never clears unrelated sites' sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        origin: {
+          type: "string",
+          description: "Target HTTP(S) origin to clear (e.g. https://accounts.example.com).",
+        },
+        storageKey: {
+          type: "string",
+          description: "Optional explicit storageKey to clear via Storage.clearDataForStorageKey.",
+        },
+        storageTypes: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["cookies", "local_storage", "indexeddb", "cache_storage", "service_workers"],
+          },
+          description:
+            "Optional list of storage types to clear (defaults to cookies, local_storage, indexeddb, cache_storage, service_workers).",
+        },
+        includeSessionStorage: {
+          type: "boolean",
+          description: "When true, also clears sessionStorage for the target origin.",
+        },
+        includeSubdomainSharedCookies: {
+          type: "boolean",
+          description:
+            "When true, also deletes parent-domain cookies (e.g. .example.com). Defaults to false to preserve sibling subdomain sessions.",
+        },
+      },
+      required: ["origin"],
+    },
+  },
+  {
     name: "list_files",
     description:
       "List files and directories in this bot's home. On a Team Computer, relative paths use the bot folder; use shared/... for shared work or bots/... to inspect the Team root.",

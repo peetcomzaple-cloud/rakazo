@@ -83,6 +83,9 @@ class CdpClient:
         self._pending: dict[int, dict[str, Any] | None] = {}
         # Worlds live in Chromium until navigation; rediscover them per CLI process.
         self._contexts: dict[int, dict[str, Any]] = {}
+        self._document_requests: dict[tuple[str, str], dict[str, Any]] = {}
+        self._document_responses: dict[str, list[dict[str, Any]]] = {}
+        self._document_failures: dict[str, list[dict[str, Any]]] = {}
 
     def connect(self) -> None:
         assert self._ws_url.startswith("ws://"), self._ws_url
@@ -219,6 +222,7 @@ class CdpClient:
         method = message.get("method")
         params = message.get("params") or {}
         session_id = message.get("sessionId")
+        sid = str(session_id or "")
         if method == "Runtime.executionContextCreated":
             context = params.get("context")
             if not isinstance(context, dict):
@@ -242,6 +246,82 @@ class CdpClient:
                     for cid, ctx in self._contexts.items()
                     if ctx.get("_sessionId") != session_id
                 }
+        elif method == "Network.requestWillBeSent":
+            req_id = str(params.get("requestId") or "")
+            if not req_id:
+                return
+            is_doc = params.get("type") == "Document" or (sid, req_id) in self._document_requests
+            if not is_doc:
+                return
+            req_obj = params.get("request") or {}
+            req_url = str(req_obj.get("url") or "") if isinstance(req_obj, dict) else ""
+            entry = self._document_requests.setdefault(
+                (sid, req_id),
+                {
+                    "requestId": req_id,
+                    "loaderId": params.get("loaderId"),
+                    "frameId": params.get("frameId"),
+                    "url": req_url,
+                    "redirectChain": [],
+                },
+            )
+            if params.get("loaderId"):
+                entry["loaderId"] = params.get("loaderId")
+            if params.get("frameId"):
+                entry["frameId"] = params.get("frameId")
+            redirect_resp = params.get("redirectResponse")
+            if isinstance(redirect_resp, dict):
+                redir_status = redirect_resp.get("status")
+                entry["redirectChain"].append(
+                    {
+                        "url": str(redirect_resp.get("url") or entry.get("url") or ""),
+                        "status": int(redir_status)
+                        if isinstance(redir_status, int) and not isinstance(redir_status, bool)
+                        else 0,
+                    }
+                )
+            if req_url:
+                entry["url"] = req_url
+        elif method == "Network.responseReceived":
+            if params.get("type") != "Document":
+                return
+            req_id = str(params.get("requestId") or "")
+            response = params.get("response") or {}
+            if not isinstance(response, dict):
+                return
+            req_entry = self._document_requests.get((sid, req_id)) or {}
+            headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
+            raw_status = response.get("status")
+            status_val = (
+                int(raw_status)
+                if isinstance(raw_status, int) and not isinstance(raw_status, bool) and raw_status > 0
+                else None
+            )
+            self._document_responses.setdefault(sid, []).append(
+                {
+                    "requestId": req_id,
+                    "loaderId": params.get("loaderId") or req_entry.get("loaderId"),
+                    "frameId": params.get("frameId") or req_entry.get("frameId"),
+                    "url": str(response.get("url") or req_entry.get("url") or ""),
+                    "status": status_val,
+                    "headers": headers,
+                    "redirectChain": list(req_entry.get("redirectChain") or []),
+                }
+            )
+        elif method == "Network.loadingFailed":
+            req_id = str(params.get("requestId") or "")
+            req_entry = self._document_requests.get((sid, req_id))
+            if params.get("type") != "Document" and req_entry is None:
+                return
+            self._document_failures.setdefault(sid, []).append(
+                {
+                    "requestId": req_id,
+                    "loaderId": params.get("loaderId") or (req_entry or {}).get("loaderId"),
+                    "frameId": params.get("frameId") or (req_entry or {}).get("frameId"),
+                    "errorText": str(params.get("errorText") or "Network loading failed"),
+                    "canceled": bool(params.get("canceled")),
+                }
+            )
 
     def find_world_context(self, world_name: str, frame_id: str, session_id: str) -> int | None:
         for context_id, context in self._contexts.items():
@@ -307,6 +387,7 @@ def attach_page(client: CdpClient) -> str:
         session_id = attached["sessionId"]
         try:
             client.call("Page.enable", session_id=session_id)
+            client.call("Network.enable", session_id=session_id)
             ensure_world(client, session_id)
             if eval_json(client, session_id, 'document.visibilityState === "visible"'):
                 focused = eval_json(client, session_id, "document.hasFocus()")
@@ -679,6 +760,116 @@ def ensure_helpers(client: CdpClient, session_id: str) -> None:
     eval_json(client, session_id, EVAL_HELPERS)
 
 
+def parse_retry_after_ms(headers: dict[str, Any] | None) -> int | None:
+    if not isinstance(headers, dict):
+        return None
+    raw_val = None
+    for k, v in headers.items():
+        if isinstance(k, str) and k.lower() == "retry-after":
+            raw_val = v
+            break
+    if raw_val is None:
+        return None
+    text = str(raw_val).strip()
+    if not text:
+        return None
+    try:
+        seconds = int(text)
+        if seconds >= 0:
+            return min(seconds * 1000, 300_000)
+    except ValueError:
+        pass
+    return None
+
+
+def find_document_response(
+    client: Any,
+    session_id: str,
+    loader_id: str | None,
+    frame_id: str | None,
+) -> dict[str, Any] | None:
+    store = getattr(client, "_document_responses", None)
+    if not isinstance(store, dict):
+        return None
+    entries = store.get(str(session_id or "")) or store.get("") or []
+    if not isinstance(entries, list):
+        return None
+    if loader_id:
+        for entry in reversed(entries):
+            if isinstance(entry, dict) and entry.get("loaderId") == loader_id:
+                return entry
+    if frame_id:
+        for entry in reversed(entries):
+            if isinstance(entry, dict) and entry.get("frameId") == frame_id:
+                return entry
+    return None
+
+
+def find_document_failure(
+    client: Any,
+    session_id: str,
+    loader_id: str | None,
+    frame_id: str | None,
+) -> dict[str, Any] | None:
+    store = getattr(client, "_document_failures", None)
+    if not isinstance(store, dict):
+        return None
+    entries = store.get(str(session_id or "")) or store.get("") or []
+    if not isinstance(entries, list):
+        return None
+    if loader_id:
+        for entry in reversed(entries):
+            if isinstance(entry, dict) and entry.get("loaderId") == loader_id:
+                return entry
+    if frame_id:
+        for entry in reversed(entries):
+            if isinstance(entry, dict) and entry.get("frameId") == frame_id:
+                return entry
+    return None
+
+
+def normalize_url_for_redirect(raw_url: str) -> str:
+    try:
+        sp = urlsplit(raw_url)
+        path = sp.path or "/"
+        return f"{sp.scheme.lower()}://{sp.netloc.lower()}{path}{('?' + sp.query) if sp.query else ''}"
+    except Exception:
+        return raw_url
+
+
+def detect_challenge_page(
+    title: str,
+    body_snippet: str,
+    has_challenge_dom: bool,
+    http_status: int | None,
+) -> str | None:
+    if has_challenge_dom:
+        return "bot_challenge"
+    combined = f"{title}\n{body_snippet}".lower()
+    cloudflare_markers = (
+        "just a moment...",
+        "attention required! | cloudflare",
+        "checking your browser before accessing",
+        "verify you are human",
+        "cf-chl-bypass",
+        "enable javascript and cookies to continue",
+    )
+    if any(marker in combined for marker in cloudflare_markers):
+        return "cloudflare_challenge"
+    captcha_markers = (
+        "please complete the security check",
+        "unusual traffic from your computer network",
+        "กรุณายืนยันว่าคุณไม่ใช่บอท",
+    )
+    if any(marker in combined for marker in captcha_markers):
+        return "captcha_challenge"
+    if http_status in (403, 429, 503) and (
+        "cloudflare" in combined or "captcha" in combined or "security check" in combined
+    ):
+        return "bot_challenge"
+    return None
+
+
 def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
@@ -688,6 +879,11 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
         raise RuntimeError(result.get("errorText") or "Navigation started a download")
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
+        doc_failure = find_document_failure(
+            client, session_id, result.get("loaderId"), result.get("frameId")
+        )
+        if doc_failure is not None:
+            raise RuntimeError(str(doc_failure.get("errorText") or "Navigation failed"))
         try:
             frame = client.call("Page.getFrameTree", session_id=session_id)["frameTree"]["frame"]
             if result.get("loaderId") and frame.get("loaderId") != result["loaderId"]:
@@ -700,17 +896,33 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
                     client,
                     session_id,
                     """(() => {
-                        let status = 200;
+                        let status = null;
+                        let redirected = false;
                         try {
                             const nav = performance.getEntriesByType('navigation')[0];
-                            if (nav && typeof nav.responseStatus === 'number' && nav.responseStatus > 0) {
-                                status = nav.responseStatus;
+                            if (nav) {
+                                if (typeof nav.responseStatus === 'number' && Number.isInteger(nav.responseStatus) && nav.responseStatus > 0) {
+                                    status = nav.responseStatus;
+                                }
+                                if (typeof nav.redirectCount === 'number' && nav.redirectCount > 0) {
+                                    redirected = true;
+                                }
                             }
                         } catch (e) {}
+                        const bodyText = (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 1000);
+                        const hasChallengeDom = Boolean(
+                            document.querySelector &&
+                            document.querySelector(
+                                '#challenge-running, #challenge-form, #cf-challenge-running, [name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha'
+                            )
+                        );
                         return {
                             url: location.href,
                             title: (document.title || '').slice(0, 200),
-                            httpStatus: status
+                            httpStatus: status,
+                            redirected,
+                            bodySnippet: bodyText,
+                            hasChallengeDom
                         };
                     })()""",
                 )
@@ -718,18 +930,66 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
                     page_info = {
                         "url": eval_json(client, session_id, "location.href"),
                         "title": eval_json(client, session_id, "(document.title || '').slice(0, 200)"),
-                        "httpStatus": 200,
+                        "httpStatus": None,
                     }
-                status_code = page_info.get("httpStatus", 200)
-                page_url = str(page_info.get("url") or "")
-                page_title = str(page_info.get("title") or "")
                 loader_id = result.get("loaderId")
                 frame_id = frame.get("id")
+                doc_resp = find_document_response(client, session_id, loader_id, frame_id)
+                cdp_status = doc_resp.get("status") if isinstance(doc_resp, dict) else None
+                perf_status = page_info.get("httpStatus")
+                if isinstance(cdp_status, int) and not isinstance(cdp_status, bool) and cdp_status > 0:
+                    status_code: int | None = cdp_status
+                elif isinstance(perf_status, int) and not isinstance(perf_status, bool) and perf_status > 0:
+                    status_code = perf_status
+                else:
+                    status_code = None
 
-                if isinstance(status_code, int) and status_code >= 400:
+                http_status_status = "known" if status_code is not None else "unknown"
+                page_url = str(page_info.get("url") or (doc_resp or {}).get("url") or "")
+                page_title = str(page_info.get("title") or "")
+                redirect_chain = (
+                    list(doc_resp.get("redirectChain") or [])
+                    if isinstance(doc_resp, dict) and isinstance(doc_resp.get("redirectChain"), list)
+                    else []
+                )
+                redirected = (
+                    bool(redirect_chain)
+                    or bool(page_info.get("redirected"))
+                    or (
+                        bool(page_url)
+                        and normalize_url_for_redirect(page_url) != normalize_url_for_redirect(url)
+                    )
+                )
+                retry_after_ms = (
+                    parse_retry_after_ms(doc_resp.get("headers"))
+                    if isinstance(doc_resp, dict)
+                    else None
+                )
+                challenge_type = detect_challenge_page(
+                    page_title,
+                    str(page_info.get("bodySnippet") or ""),
+                    bool(page_info.get("hasChallengeDom")),
+                    status_code,
+                )
+                extra_fields: dict[str, Any] = {
+                    "httpStatusStatus": http_status_status,
+                }
+                if status_code is not None:
+                    extra_fields["httpStatus"] = status_code
+                if redirected:
+                    extra_fields["redirected"] = True
+                if redirect_chain:
+                    extra_fields["redirectChain"] = redirect_chain
+                if retry_after_ms is not None:
+                    extra_fields["retryAfterMs"] = retry_after_ms
+                if challenge_type is not None:
+                    extra_fields["challengeDetected"] = True
+                    extra_fields["challengeType"] = challenge_type
+
+                if status_code is not None and status_code >= 400:
                     return {
                         "ok": False,
-                        "httpStatus": status_code,
+                        **extra_fields,
                         "url": page_url,
                         "title": page_title,
                         "loaderId": loader_id,
@@ -737,9 +997,20 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
                         "error": f"HTTP {status_code} error: {page_title or 'Bad Response'}",
                         "fallback": "computer_act",
                     }
+                if challenge_type is not None:
+                    return {
+                        "ok": False,
+                        **extra_fields,
+                        "url": page_url,
+                        "title": page_title,
+                        "loaderId": loader_id,
+                        "frameId": frame_id,
+                        "error": f"Anti-bot or security challenge detected ({challenge_type}): {page_title or page_url}",
+                        "fallback": "computer_act",
+                    }
                 return {
                     "ok": True,
-                    "httpStatus": status_code,
+                    **extra_fields,
                     "url": page_url,
                     "title": page_title,
                     "loaderId": loader_id,
@@ -749,6 +1020,165 @@ def navigate(client: CdpClient, session_id: str, url: str) -> dict[str, Any]:
             pass
         time.sleep(0.1)
     raise RuntimeError("Navigation did not settle; inspect the screen before continuing")
+
+
+DEFAULT_CLEAR_STORAGE_TYPES = (
+    "cookies",
+    "local_storage",
+    "indexeddb",
+    "cache_storage",
+    "service_workers",
+)
+ALLOWED_CLEAR_STORAGE_TYPES = frozenset(DEFAULT_CLEAR_STORAGE_TYPES)
+
+
+def normalize_http_origin(raw_origin: Any) -> tuple[str, str, str]:
+    if not isinstance(raw_origin, str) or not raw_origin.strip():
+        raise ValueError("origin must be a non-empty HTTP(S) origin")
+    parsed = urlsplit(raw_origin.strip())
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("origin must use http or https and include a hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("origin must not contain credentials")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("origin must not contain a path, query, or fragment")
+    hostname = parsed.hostname.lower()
+    port = parsed.port
+    host_display = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        netloc = f"{host_display}:{port}"
+    else:
+        netloc = host_display
+    return f"{scheme}://{netloc}", scheme, hostname
+
+
+def clear_origin_storage(
+    client: CdpClient,
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(args, dict):
+        raise ValueError("args must be an object")
+    origin, _scheme, hostname = normalize_http_origin(args.get("origin"))
+    raw_storage_key = args.get("storageKey")
+    storage_key: str | None = None
+    if raw_storage_key is not None:
+        if not isinstance(raw_storage_key, str) or not raw_storage_key.strip():
+            raise ValueError("storageKey must be a non-empty string when provided")
+        candidate_key = raw_storage_key.strip()
+        key_origin_part = candidate_key.split("^", 1)[0].rstrip("/")
+        try:
+            normalized_key_origin, _, _ = normalize_http_origin(key_origin_part)
+        except ValueError as exc:
+            raise ValueError("storageKey does not contain a valid HTTP(S) origin") from exc
+        if normalized_key_origin != origin:
+            raise ValueError(f"storageKey origin {normalized_key_origin} does not match target origin {origin}")
+        storage_key = candidate_key
+
+    raw_types = args.get("storageTypes")
+    if raw_types is None:
+        requested_types = list(DEFAULT_CLEAR_STORAGE_TYPES)
+    else:
+        if not isinstance(raw_types, list) or not raw_types:
+            raise ValueError("storageTypes must be a non-empty array when provided")
+        requested_types = []
+        for item in raw_types:
+            if not isinstance(item, str) or item not in ALLOWED_CLEAR_STORAGE_TYPES:
+                raise ValueError(
+                    f"Unsupported or unsafe storageType: {item!r}. Allowed: {sorted(ALLOWED_CLEAR_STORAGE_TYPES)}"
+                )
+            if item not in requested_types:
+                requested_types.append(item)
+
+    include_session_storage = bool(args.get("includeSessionStorage") is True)
+    include_subdomain_shared = bool(args.get("includeSubdomainSharedCookies") is True)
+
+    cdp_storage_types = [t for t in requested_types if t != "cookies"]
+    if cdp_storage_types:
+        joined_types = ",".join(cdp_storage_types)
+        if storage_key:
+            client.call(
+                "Storage.clearDataForStorageKey",
+                {"storageKey": storage_key, "storageTypes": joined_types},
+                session_id=session_id,
+            )
+        else:
+            client.call(
+                "Storage.clearDataForOrigin",
+                {"origin": origin, "storageTypes": joined_types},
+                session_id=session_id,
+            )
+
+    deleted_cookies = 0
+    if "cookies" in requested_types:
+        cookies_res = client.call(
+            "Network.getCookies",
+            {"urls": [origin, f"{origin}/"]},
+            session_id=session_id,
+        )
+        cookies = cookies_res.get("cookies") if isinstance(cookies_res, dict) else []
+        if isinstance(cookies, list):
+            for cookie in cookies:
+                if not isinstance(cookie, dict):
+                    continue
+                cookie_name = cookie.get("name")
+                raw_domain = str(cookie.get("domain") or "")
+                if not isinstance(cookie_name, str) or not cookie_name or not raw_domain:
+                    continue
+                clean_domain = raw_domain.lstrip(".").lower()
+                is_exact_host = clean_domain == hostname
+                is_parent_shared = hostname.endswith("." + clean_domain)
+                if is_exact_host or (include_subdomain_shared and is_parent_shared):
+                    delete_params: dict[str, Any] = {
+                        "name": cookie_name,
+                        "domain": raw_domain,
+                        "url": origin,
+                    }
+                    if isinstance(cookie.get("path"), str) and cookie["path"]:
+                        delete_params["path"] = cookie["path"]
+                    if cookie.get("partitionKey") is not None:
+                        delete_params["partitionKey"] = cookie["partitionKey"]
+                    client.call("Network.deleteCookies", delete_params, session_id=session_id)
+                    deleted_cookies += 1
+
+    if include_session_storage:
+        frame = client.call("Page.getFrameTree", session_id=session_id).get("frameTree", {}).get("frame", {})
+        frame_origin = None
+        if isinstance(frame, dict):
+            sec_origin = frame.get("securityOrigin")
+            frame_url = frame.get("url")
+            for candidate in (sec_origin, frame_url):
+                if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+                    try:
+                        sp = urlsplit(candidate)
+                        if sp.hostname:
+                            frame_origin, _, _ = normalize_http_origin(f"{sp.scheme}://{sp.netloc}")
+                            break
+                    except ValueError:
+                        pass
+        if frame_origin != origin:
+            raise RuntimeError(
+                f"Cannot clear sessionStorage for {origin} while active tab is at {frame_origin or 'another origin'}"
+            )
+        client.call("DOMStorage.enable", session_id=session_id)
+        storage_id: dict[str, Any] = {
+            "securityOrigin": origin,
+            "isLocalStorage": False,
+        }
+        if storage_key:
+            storage_id["storageKey"] = storage_key
+        client.call("DOMStorage.clear", {"storageId": storage_id}, session_id=session_id)
+
+    return {
+        "ok": True,
+        "origin": origin,
+        "clearedStorageTypes": requested_types,
+        "clearedSessionStorage": include_session_storage,
+        "includeSubdomainSharedCookies": include_subdomain_shared,
+        "deletedCookies": deleted_cookies,
+        **({"storageKey": storage_key} if storage_key else {}),
+    }
 
 
 def snapshot(client: CdpClient, session_id: str) -> dict[str, Any]:
@@ -859,6 +1289,8 @@ def run(argv: list[str]) -> int:
                 if not isinstance(actions, list):
                     raise RuntimeError("actions must be an array")
                 result = act(client, session_id, actions)
+            elif command == "clear_origin_storage":
+                result = clear_origin_storage(client, session_id, args)
             else:
                 result = {
                     "ok": False,

@@ -4,6 +4,10 @@ import { SpikeBrowserProvider, type DriverBackendKind } from "./browser-provider
 
 function makeContext(signal?: AbortSignal): AdapterContext {
   return {
+    operationId: "test-op",
+    traceId: "test-trace",
+    spaceId: "space-1",
+    userId: "user-1",
     signal: signal ?? new AbortController().signal,
   };
 }
@@ -89,7 +93,7 @@ describe.each(DRIVER_KINDS)("SpikeBrowserProvider [%s]", (driverKind) => {
 
     const buttons = snap.elements.filter((e) => e.name === "Add to Cart");
     expect(buttons.length).toBe(2);
-    expect(buttons[0].ref).not.toBe(buttons[1].ref);
+    expect(buttons[0]!.ref).not.toBe(buttons[1]!.ref);
   });
 
   it("F3: clicks and selects combobox options correctly", async () => {
@@ -254,7 +258,7 @@ describe.each(DRIVER_KINDS)("SpikeBrowserProvider [%s]", (driverKind) => {
     const ctx = makeContext();
     const comp = makeComputer(1);
     const snap1 = await provider.snapshot(comp, {}, ctx);
-    const oldRef = snap1.elements[0].ref;
+    const oldRef = snap1.elements[0]!.ref;
 
     // Simulate SPA DOM replacement
     provider.loadHtml(
@@ -313,7 +317,7 @@ describe.each(DRIVER_KINDS)("SpikeBrowserProvider [%s]", (driverKind) => {
     // 1. Observe with fence 10
     const compFence10 = makeComputer(10);
     const snap = await provider.snapshot(compFence10, {}, ctx);
-    const ref = snap.elements[0].ref;
+    const ref = snap.elements[0]!.ref;
 
     // 2. Incoming delayed request with stale fence 9
     const compFence9 = makeComputer(9);

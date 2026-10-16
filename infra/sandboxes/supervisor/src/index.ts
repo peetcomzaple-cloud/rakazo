@@ -438,6 +438,41 @@ app.post("/computers/:id/browser", async (c) => {
           .min(1)
           .max(24),
       }),
+      z.object({
+        command: z.literal("clear_origin_storage"),
+        origin: z
+          .string()
+          .url()
+          .max(2048)
+          .refine((value) => {
+            if (!URL.canParse(value)) return false;
+            const url = new URL(value);
+            return (
+              /^https?:$/.test(url.protocol) &&
+              !url.username &&
+              !url.password &&
+              (url.pathname === "" || url.pathname === "/") &&
+              !url.search &&
+              !url.hash
+            );
+          }),
+        storageKey: z.string().min(1).max(2048).optional(),
+        storageTypes: z
+          .array(
+            z.enum([
+              "cookies",
+              "local_storage",
+              "indexeddb",
+              "cache_storage",
+              "service_workers",
+            ]),
+          )
+          .min(1)
+          .max(5)
+          .optional(),
+        includeSessionStorage: z.boolean().optional(),
+        includeSubdomainSharedCookies: z.boolean().optional(),
+      }),
     ])
     .parse(await c.req.json());
   const carriesSavedLogin =
@@ -495,7 +530,7 @@ app.post("/computers/:id/browser", async (c) => {
 
 app.post("/computers/:id/observe", async (c) => {
   try {
-    const { container, info, layout, browserProfile } = await managedScreen(
+    const { container, info, layout, browserProfile, screenIdentity } = await managedScreen(
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
@@ -514,13 +549,19 @@ app.post("/computers/:id/observe", async (c) => {
               true,
               0,
             );
-            if (!result.observation) throw new Error("computer control returned no observation");
-            return result.observation;
+            if (!result.observation || typeof result.observation !== "object") {
+              throw new Error("computer control returned no observation");
+            }
+            return result.observation as Record<string, unknown>;
           }
         : undefined,
-      () => observeContainer(container, layout.display),
+      () => observeContainer(container, layout.display, browserProfile),
     );
-    return c.json(observation);
+    return c.json({
+      ...observation,
+      display: layout.display,
+      screenIdentity,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return c.json({ error: message }, 500);
@@ -536,7 +577,7 @@ app.post("/computers/:id/actions", async (c) => {
     })
     .parse(await c.req.json());
   try {
-    const { container, info, layout, browserProfile } = await managedScreen(
+    const { container, info, layout, browserProfile, screenIdentity } = await managedScreen(
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
@@ -563,14 +604,22 @@ app.post("/computers/:id/actions", async (c) => {
       await applyContainerActions(container, body.actions, layout.display, browserProfile);
     if (shouldReplayComputerActions(attempt) && body.settleMs)
       await new Promise((resolve) => setTimeout(resolve, body.settleMs));
+    const rawObservation =
+      body.observe === false
+        ? undefined
+        : ((controlResult?.observation as Record<string, unknown> | undefined) ??
+          (await observeContainer(container, layout.display, browserProfile)));
     return c.json({
       completed: controlResult?.completed ?? body.actions.length,
-      ...(body.observe === false
-        ? {}
-        : {
-            observation:
-              controlResult?.observation ?? (await observeContainer(container, layout.display)),
-          }),
+      ...(rawObservation
+        ? {
+            observation: {
+              ...rawObservation,
+              display: layout.display,
+              screenIdentity,
+            },
+          }
+        : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1188,13 +1237,32 @@ async function ensureManagedScreen(
     const detail = [ensured.stderr, browserLog.stdout].filter(Boolean).join("\n").trim();
     throw new Error(detail || `computer screen ${layout.display} failed to start`);
   }
+  const browserProfile = browserProfilePathForScreen(screenKey);
+  const effectiveLeaseId = slot.leaseId ?? screenLeaseId;
+  const parsedFence = effectiveLeaseId?.includes(":")
+    ? Number(effectiveLeaseId.slice(effectiveLeaseId.lastIndexOf(":") + 1))
+    : undefined;
+  const screenIdentity = {
+    computerId: id,
+    ...(botId ? { botId } : {}),
+    screenId: screenKey,
+    display: layout.display,
+    generation: 1,
+    profile: browserProfile,
+    profileFingerprint: path.posix.basename(browserProfile),
+    ...(effectiveLeaseId ? { leaseId: effectiveLeaseId } : {}),
+    ...(parsedFence !== undefined && Number.isSafeInteger(parsedFence) && parsedFence >= 0
+      ? { fence: parsedFence }
+      : {}),
+  };
   return {
     container,
     info,
     layout,
     index,
     screenKey,
-    browserProfile: browserProfilePathForScreen(screenKey),
+    browserProfile,
+    screenIdentity,
     viewToken,
   };
 }
@@ -1254,6 +1322,7 @@ export async function controlDesktop(
       body: JSON.stringify({
         steps: containerActionSteps(actions, display, browserProfile),
         display,
+        browserProfile,
         observe,
         settleMs,
       }),
@@ -1804,10 +1873,58 @@ async function applyContainerActions(
   if (result.code !== 0) throw new Error(result.stderr || "computer action failed");
 }
 
-async function observeContainer(container: Docker.Container, display = ":1") {
+async function observeContainer(
+  container: Docker.Container,
+  display = ":1",
+  browserProfile?: string,
+) {
+  const inventoryPy = [
+    "import datetime, json, os, subprocess, sys",
+    "prof = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None",
+    "ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')",
+    "print('INVENTORY_TS ' + ts)",
+    "try:",
+    "  p = subprocess.run(['wmctrl', '-lxp'], capture_output=True, text=True, timeout=5)",
+    "except Exception:",
+    "  p = None",
+    "if not p or p.returncode != 0:",
+    "  print('INVENTORY_STATUS unknown')",
+    "else:",
+    "  wins, seen = [], set()",
+    "  for line in p.stdout.splitlines():",
+    "    parts = line.strip().split(None, 5)",
+    "    if len(parts) < 4: continue",
+    "    raw = parts[0].strip()",
+    "    try:",
+    "      num = int(raw, 16) if raw.lower().startswith('0x') else int(raw, 10)",
+    "      wid = f'0x{num:08x}' if num > 0 else ''",
+    "    except Exception:",
+    "      wid = raw",
+    "    if not wid or wid in seen: continue",
+    "    seen.add(wid)",
+    "    pid = int(parts[2]) if parts[2].isdigit() and int(parts[2]) > 0 else None",
+    "    cur = True",
+    "    if prof:",
+    "      cur = False",
+    "      if pid:",
+    "        try:",
+    "          cmd = open(f'/proc/{pid}/cmdline', 'rb').read().decode('utf-8', 'replace')",
+    "          flag = f'--user-data-dir={prof}'",
+    "          cur = (flag in cmd.split('\\0')) or (f' {flag} ' in f' {cmd.replace(chr(0), \" \")} ') or ('--user-data-dir=' not in cmd)",
+    "        except Exception:",
+    "          cur = False",
+    "    w = {'id': wid, 'wmClass': parts[3], 'isCurrentProfile': cur}",
+    "    if pid is not None: w['pid'] = pid",
+    "    if len(parts) >= 6 and parts[5].strip(): w['title'] = parts[5].strip()",
+    "    wins.append(w)",
+    "  print('INVENTORY_STATUS ' + ('validnonempty' if wins else 'validempty'))",
+    "  print('WINDOWS_JSON ' + json.dumps(wins, separators=(',', ':')))",
+  ].join("\n");
   const command = [
     "set -e",
     `export DISPLAY=${display}`,
+    `printf "DISPLAY %s\\n" ${shellQuote(display)}`,
+    `python3 -c ${shellQuote(inventoryPy)} ${shellQuote(browserProfile ?? "")} 2>/dev/null || printf "INVENTORY_STATUS unknown\\n"`,
     'printf "GEOM %s\\n" "$(xdotool getdisplaygeometry 2>/dev/null || echo 1280 800)"',
     'printf "CURSOR %s\\n" "$(xdotool getmouselocation --shell 2>/dev/null | tr "\\n" " " || true)"',
     'wid="$(xdotool getactivewindow 2>/dev/null || true)"',
@@ -1816,6 +1933,7 @@ async function observeContainer(container: Docker.Container, display = ":1") {
     'printf "IMAGE "',
     "scrot - 2>/dev/null | base64 -w0",
     'printf "\\n"',
+    `python3 -c "import datetime; print('CAPTURED_AT ' + datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'))" 2>/dev/null || true`,
   ].join("; ");
   const result = await runContainerCommand(container, ["bash", "-lc", command]);
   if (result.code !== 0) throw new Error(result.stderr || "screen capture failed");

@@ -9,6 +9,10 @@ import {
 
 function makeContext(signal?: AbortSignal): AdapterContext {
   return {
+    operationId: "test-op",
+    traceId: "test-trace",
+    spaceId: "space-1",
+    userId: "user-1",
     signal: signal ?? new AbortController().signal,
   };
 }
@@ -276,6 +280,6 @@ describe("Jev Decision Loop Conformance [03_JEV_TEST_PROTOCOL.md J01-J14]", () =
 
     const obs = buildSelectorObservation(frameSnap);
     expect(obs.candidates.length).toBe(1);
-    expect(obs.candidates[0].name).toBe("Top Button");
+    expect(obs.candidates[0]!.name).toBe("Top Button");
   });
 });

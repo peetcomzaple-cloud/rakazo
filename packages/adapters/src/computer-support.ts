@@ -24,15 +24,39 @@ const EMPTY_PNG = Uint8Array.from(
   ),
 );
 
+let captureSequence = 0;
+
 export function computerObservation(
   image: Uint8Array,
-  input: Omit<ComputerObservation, "frameId" | "capturedAt" | "image">,
+  input: Omit<ComputerObservation, "frameId" | "capturedAt" | "image"> & {
+    frameId?: string;
+    capturedAt?: string;
+  },
 ): ComputerObservation {
+  const capturedAt =
+    typeof input.capturedAt === "string" && Number.isFinite(Date.parse(input.capturedAt))
+      ? input.capturedAt
+      : new Date().toISOString();
+  const capturedMs = Date.parse(capturedAt);
+  const freshnessMs = input.windowInventoryFreshness
+    ? Date.parse(input.windowInventoryFreshness)
+    : Number.NaN;
+  const windowInventoryFreshness =
+    input.windowInventoryFreshness && Number.isFinite(freshnessMs)
+      ? freshnessMs > capturedMs
+        ? capturedAt
+        : input.windowInventoryFreshness
+      : input.windowInventoryFreshness;
+  const imageHash = createHash("sha256").update(image).digest("hex");
   return {
     ...input,
+    ...(windowInventoryFreshness !== undefined ? { windowInventoryFreshness } : {}),
     image,
-    frameId: createHash("sha256").update(image).digest("hex"),
-    capturedAt: new Date().toISOString(),
+    frameId:
+      typeof input.frameId === "string" && input.frameId.length > 0
+        ? input.frameId
+        : `${imageHash}:${++captureSequence}`,
+    capturedAt,
   };
 }
 

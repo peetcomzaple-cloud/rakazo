@@ -2,6 +2,8 @@ import type {
   AdapterContext,
   BrowserActRequest,
   BrowserActResult,
+  BrowserClearOriginStorageRequest,
+  BrowserClearOriginStorageResult,
   BrowserNavigateRequest,
   BrowserNavigateResult,
   BrowserProvider,
@@ -25,6 +27,29 @@ export type LivePageBrowserDriver = (
   request: PageBrowserCommand,
   context: AdapterContext,
 ) => Promise<LivePayload>;
+
+function extractNavigateMetadata(live?: LivePayload): Partial<BrowserNavigateResult> {
+  if (!live || typeof live !== "object") return {};
+  const meta: Partial<BrowserNavigateResult> = {};
+  if (typeof live.httpStatus === "number" && Number.isInteger(live.httpStatus) && live.httpStatus > 0) {
+    meta.httpStatus = live.httpStatus;
+  }
+  if (live.httpStatusStatus === "known" || live.httpStatusStatus === "unknown") {
+    meta.httpStatusStatus = live.httpStatusStatus;
+  }
+  if (typeof live.loaderId === "string" && live.loaderId) meta.loaderId = live.loaderId;
+  if (typeof live.frameId === "string" && live.frameId) meta.frameId = live.frameId;
+  if (typeof live.redirected === "boolean") meta.redirected = live.redirected;
+  if (Array.isArray(live.redirectChain)) meta.redirectChain = live.redirectChain;
+  if (typeof live.challengeDetected === "boolean") meta.challengeDetected = live.challengeDetected;
+  if (typeof live.challengeType === "string" && live.challengeType) {
+    meta.challengeType = live.challengeType;
+  }
+  if (typeof live.retryAfterMs === "number" && Number.isFinite(live.retryAfterMs) && live.retryAfterMs >= 0) {
+    meta.retryAfterMs = live.retryAfterMs;
+  }
+  return meta;
+}
 
 /**
  * Production page-browser adapter for the bot computer.
@@ -76,10 +101,12 @@ export class ComputerBrowserProvider implements BrowserProvider {
       return this.fake.navigate(computer, request, context);
     }
     const live = await this.runLive(computer, { command: "navigate", url: request.url }, context);
+    const extra = extractNavigateMetadata(live);
     if (live?.ok !== true || live.fallback === "computer_act") {
       return {
-        url: request.url,
-        title: "",
+        url: typeof live?.url === "string" && live.url ? live.url : request.url,
+        title: typeof live?.title === "string" ? live.title : "",
+        ...extra,
         fallback: "computer_act",
         error: live?.error || DETACHED_MESSAGE,
       };
@@ -87,6 +114,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
     return {
       url: typeof live.url === "string" ? live.url : request.url,
       title: typeof live.title === "string" ? live.title : "",
+      ...extra,
     };
   }
 
@@ -153,6 +181,68 @@ export class ComputerBrowserProvider implements BrowserProvider {
     };
   }
 
+  async clearOriginStorage(
+    computer: ComputerRef,
+    request: BrowserClearOriginStorageRequest,
+    context: AdapterContext,
+  ): Promise<BrowserClearOriginStorageResult> {
+    let normalizedOrigin = request.origin;
+    try {
+      normalizedOrigin = new URL(request.origin).origin;
+    } catch {
+      // Keep raw origin if not parseable here; live helper or caller validates
+    }
+    const normalizedRequest: BrowserClearOriginStorageRequest = {
+      ...request,
+      origin: normalizedOrigin,
+    };
+    if (this.canUseInProcess(computer)) {
+      return this.fake.clearOriginStorage(computer, normalizedRequest, context);
+    }
+    const live = await this.runLive(
+      computer,
+      {
+        command: "clear_origin_storage",
+        origin: normalizedOrigin,
+        ...(request.storageKey !== undefined ? { storageKey: request.storageKey } : {}),
+        ...(request.storageTypes !== undefined ? { storageTypes: request.storageTypes } : {}),
+        ...(request.includeSessionStorage !== undefined
+          ? { includeSessionStorage: request.includeSessionStorage }
+          : {}),
+        ...(request.includeSubdomainSharedCookies !== undefined
+          ? { includeSubdomainSharedCookies: request.includeSubdomainSharedCookies }
+          : {}),
+      },
+      context,
+    );
+    if (live?.ok !== true || live.fallback === "computer_act") {
+      return {
+        ok: false,
+        origin: normalizedOrigin,
+        fallback: "computer_act",
+        error: live?.error || DETACHED_MESSAGE,
+      };
+    }
+    const clearedTypes = Array.isArray(live.clearedStorageTypes)
+      ? live.clearedStorageTypes
+      : Array.isArray((live as { storageTypes?: BrowserClearOriginStorageResult["clearedStorageTypes"] }).storageTypes)
+        ? (live as { storageTypes?: BrowserClearOriginStorageResult["clearedStorageTypes"] }).storageTypes
+        : request.storageTypes;
+    return {
+      ok: true,
+      origin: typeof live.origin === "string" ? live.origin : normalizedOrigin,
+      ...(typeof live.storageKey === "string" ? { storageKey: live.storageKey } : {}),
+      ...(clearedTypes !== undefined ? { clearedStorageTypes: clearedTypes } : {}),
+      ...(typeof live.clearedSessionStorage === "boolean"
+        ? { clearedSessionStorage: live.clearedSessionStorage }
+        : {}),
+      ...(typeof live.includeSubdomainSharedCookies === "boolean"
+        ? { includeSubdomainSharedCookies: live.includeSubdomainSharedCookies }
+        : {}),
+      ...(typeof live.deletedCookies === "number" ? { deletedCookies: live.deletedCookies } : {}),
+    };
+  }
+
   private canUseInProcess(computer: ComputerRef): boolean {
     return computer.kind === "fake";
   }
@@ -175,8 +265,17 @@ export class ComputerBrowserProvider implements BrowserProvider {
               uncertain: false,
             };
       if (result?.ok === true) {
-        if (typeof result.url !== "string" || typeof result.title !== "string") {
+        if (
+          request.command !== "clear_origin_storage" &&
+          (typeof result.url !== "string" || typeof result.title !== "string")
+        ) {
           throw new Error("Incomplete page browser response");
+        }
+        if (
+          request.command === "clear_origin_storage" &&
+          typeof result.origin !== "string"
+        ) {
+          throw new Error("Incomplete origin storage response");
         }
         if (
           request.command === "snapshot" &&

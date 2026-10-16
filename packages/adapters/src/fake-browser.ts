@@ -2,15 +2,26 @@ import type {
   AdapterContext,
   BrowserActRequest,
   BrowserActResult,
+  BrowserClearOriginStorageRequest,
+  BrowserClearOriginStorageResult,
   BrowserNavigateRequest,
   BrowserNavigateResult,
   BrowserProvider,
   BrowserSnapshotRequest,
   BrowserSnapshotResult,
+  BrowserStorageType,
   ComputerRef,
 } from "@rakazo/adapter-kit";
 import { PageBrowserSessionStore, pageBrowserSessionKey } from "./page-browser-session.js";
 import { fetchSafeWebText } from "./web-ssrf.js";
+
+const DEFAULT_BROWSER_STORAGE_TYPES: BrowserStorageType[] = [
+  "cookies",
+  "local_storage",
+  "indexeddb",
+  "cache_storage",
+  "service_workers",
+];
 
 export interface FakeBrowserProviderOptions {
   /** Inject HTML for a URL without hitting the network (offline tests). */
@@ -137,6 +148,58 @@ export class FakeBrowserProvider implements BrowserProvider {
       };
     }
     return this.sessions.get(pageBrowserSessionKey(computer, context)).act(request.actions);
+  }
+
+  async clearOriginStorage(
+    _computer: ComputerRef,
+    request: BrowserClearOriginStorageRequest,
+    _context: AdapterContext,
+  ): Promise<BrowserClearOriginStorageResult> {
+    if (this.forceFallback) {
+      return {
+        ok: false,
+        origin: request.origin,
+        fallback: "computer_act",
+        error: this.forceFallback,
+      };
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(request.origin);
+    } catch {
+      return {
+        ok: false,
+        origin: request.origin,
+        fallback: "computer_act",
+        error: "origin must be a valid HTTP(S) origin",
+      };
+    }
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password ||
+      (parsed.pathname !== "" && parsed.pathname !== "/") ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return {
+        ok: false,
+        origin: request.origin,
+        fallback: "computer_act",
+        error: "origin must be an HTTP(S) origin without path, query, fragment, or credentials",
+      };
+    }
+    return {
+      ok: true,
+      origin: parsed.origin,
+      ...(request.storageKey ? { storageKey: request.storageKey } : {}),
+      clearedStorageTypes: request.storageTypes
+        ? [...request.storageTypes]
+        : [...DEFAULT_BROWSER_STORAGE_TYPES],
+      clearedSessionStorage: request.includeSessionStorage === true,
+      includeSubdomainSharedCookies: request.includeSubdomainSharedCookies === true,
+      deletedCookies: 0,
+    };
   }
 }
 

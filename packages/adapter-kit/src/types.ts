@@ -143,6 +143,33 @@ export type ComputerAction =
   | { kind: "launch"; application: string; uri?: string }
   | { kind: "focus"; application: string; uri?: string };
 
+export interface ScreenIdentityMetadata {
+  computerId?: string;
+  botId?: string;
+  screenId?: string;
+  display?: string;
+  generation?: number;
+  profile?: string;
+  profileFingerprint?: string;
+  runId?: string;
+  leaseId?: string;
+  fence?: number;
+  browserClosed?: boolean;
+  viewToken?: string;
+  controlToken?: string;
+  token?: string;
+  [key: string]: unknown;
+}
+
+export interface WindowInventoryEntry {
+  id: string;
+  title?: string;
+  wmClass?: string;
+  pid?: number;
+  isCurrentProfile?: boolean;
+  [key: string]: unknown;
+}
+
 export interface ComputerObservation {
   frameId: string;
   capturedAt: string;
@@ -151,7 +178,15 @@ export interface ComputerObservation {
   width: number;
   height: number;
   cursor?: { x: number; y: number };
-  activeWindow?: { id: string; title?: string };
+  activeWindow?: WindowInventoryEntry;
+  display?: string;
+  screenIdentity?: ScreenIdentityMetadata;
+  windowInventoryStatus?: "unknown" | "validempty" | "validnonempty";
+  windowInventoryFreshness?: string;
+  windows?: WindowInventoryEntry[];
+  originalDimensions?: { width: number; height: number };
+  displayedDimensions?: { width: number; height: number };
+  unchangedScreen?: boolean;
 }
 
 export interface ComputerActionRequest {
@@ -162,6 +197,8 @@ export interface ComputerActionRequest {
 
 export interface ComputerActionResult {
   completed: number;
+  applied?: boolean;
+  verified?: boolean;
   observation?: ComputerObservation;
 }
 
@@ -466,6 +503,8 @@ export interface AgentRunRequest {
   model: AgentRunModel;
   /** Ordered, user-selected models eligible after provider unavailability. */
   fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id">>;
+  /** Allow switching to fallback models after read-only tool errors. */
+  fallbackOnReadToolError?: boolean;
   /** Resolve one configured backup lazily so healthy primary turns do no extra auth work. */
   resolveFallbackModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
   /** Persist the selected backup against the active run lease before requesting it. */
@@ -841,9 +880,47 @@ export interface BrowserNavigateRequest {
 }
 
 export interface BrowserNavigateResult {
+  ok?: boolean;
   url: string;
   title: string;
+  httpStatus?: number;
+  httpStatusStatus?: "known" | "unknown";
+  loaderId?: string;
+  frameId?: string;
+  redirected?: boolean;
+  redirectChain?: Array<{ url: string; status: number }>;
+  challengeDetected?: boolean;
+  challengeType?: string;
+  retryAfterMs?: number;
   /** When set, the page tool could not operate; use computer_act instead. */
+  fallback?: "computer_act";
+  error?: string;
+}
+
+export type BrowserStorageType =
+  | "cookies"
+  | "local_storage"
+  | "indexeddb"
+  | "cache_storage"
+  | "service_workers";
+
+export interface BrowserClearOriginStorageRequest {
+  origin: string;
+  storageKey?: string;
+  storageTypes?: BrowserStorageType[];
+  includeSessionStorage?: boolean;
+  includeSubdomainSharedCookies?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface BrowserClearOriginStorageResult {
+  ok: boolean;
+  origin: string;
+  storageKey?: string;
+  clearedStorageTypes?: BrowserStorageType[];
+  clearedSessionStorage?: boolean;
+  includeSubdomainSharedCookies?: boolean;
+  deletedCookies?: number;
   fallback?: "computer_act";
   error?: string;
 }
@@ -906,9 +983,22 @@ export interface BrowserActResult {
 export type PageBrowserCommand =
   | { command: "navigate"; url: string }
   | { command: "snapshot" }
-  | { command: "act"; actions: BrowserActStep[] };
+  | { command: "act"; actions: BrowserActStep[] }
+  | {
+      command: "clear_origin_storage";
+      origin: string;
+      storageKey?: string;
+      storageTypes?: BrowserStorageType[];
+      includeSessionStorage?: boolean;
+      includeSubdomainSharedCookies?: boolean;
+    };
 
-export type PageBrowserResult = Partial<BrowserSnapshotResult & BrowserActResult> & { ok: boolean };
+export type PageBrowserResult = Partial<
+  BrowserNavigateResult &
+    BrowserSnapshotResult &
+    BrowserActResult &
+    BrowserClearOriginStorageResult
+> & { ok: boolean };
 
 /** Vendor-neutral status for a remote cloud coding agent. */
 export type CloudAgentStatus = "running" | "finished" | "failed" | "cancelled";

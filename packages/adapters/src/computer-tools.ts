@@ -95,6 +95,9 @@ export type ScreenIdentityMetadata = {
   generation?: number;
   profile?: string;
   profileFingerprint?: string;
+  runId?: string;
+  leaseId?: string;
+  fence?: number;
   browserClosed?: boolean;
   viewToken?: string;
   controlToken?: string;
@@ -111,6 +114,26 @@ export type WindowInventoryEntry = {
   [key: string]: unknown;
 };
 
+export function isSameScreenGeneration(
+  a: { display?: string; generation?: number; computerId?: string } | undefined,
+  b: { display?: string; generation?: number; computerId?: string } | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return (
+    a.display === b.display &&
+    a.generation === b.generation &&
+    a.computerId === b.computerId
+  );
+}
+
+export function sanitizeWebScreenIdentity<T extends Record<string, unknown>>(
+  identity: T | undefined,
+): Omit<T, "viewToken" | "controlToken" | "token"> | undefined {
+  if (!identity || typeof identity !== "object") return undefined;
+  const { viewToken, controlToken, token, ...rest } = identity as Record<string, unknown>;
+  return rest as Omit<T, "viewToken" | "controlToken" | "token">;
+}
+
 export type ExtendedComputerObservation = ComputerObservation & {
   display?: string;
   screenIdentity?: ScreenIdentityMetadata;
@@ -120,7 +143,7 @@ export type ExtendedComputerObservation = ComputerObservation & {
   activeWindow?: WindowInventoryEntry;
   originalDimensions?: { width: number; height: number };
   displayedDimensions?: { width: number; height: number };
-  [key: string]: unknown;
+  unchangedScreen?: boolean;
 };
 
 export function isPointerClickAction(action: unknown): boolean {
@@ -150,12 +173,26 @@ export function isWindowCloseAction(action: unknown): boolean {
   return false;
 }
 
-export function sanitizeScreenIdentity<T extends Record<string, unknown>>(
-  identity: T | undefined,
-): Omit<T, "viewToken" | "controlToken" | "token"> | undefined {
-  if (!identity || typeof identity !== "object") return undefined;
-  const { viewToken, controlToken, token, ...rest } = identity as Record<string, unknown>;
-  return rest as Omit<T, "viewToken" | "controlToken" | "token">;
+export function sanitizeScreenIdentity(
+  identity: Record<string, unknown> | undefined,
+): ScreenIdentityMetadata | undefined {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return undefined;
+  const result: ScreenIdentityMetadata = {};
+  for (const key of [
+    "computerId",
+    "botId",
+    "screenId",
+    "display",
+    "profile",
+    "profileFingerprint",
+  ] as const) {
+    if (typeof identity[key] === "string") result[key] = identity[key];
+  }
+  if (Number.isSafeInteger(identity.generation) && Number(identity.generation) >= 0) {
+    result.generation = Number(identity.generation);
+  }
+  if (typeof identity.browserClosed === "boolean") result.browserClosed = identity.browserClosed;
+  return result;
 }
 
 export function sanitizeWindowTitle(title: string | undefined): string {
@@ -165,22 +202,21 @@ export function sanitizeWindowTitle(title: string | undefined): string {
       const u = new URL(url);
       return `${u.origin}${u.pathname}`;
     } catch {
-      return url.split("?")[0];
+      return url.split(/[?#]/)[0] ?? "";
     }
   });
-  result = result.replace(/\?[a-zA-Z0-9_=&%-]+/g, "");
+  result = result.replace(/\?[^\s#]+/g, "");
+  result = result.replace(/#[^\s]*=[^\s]*/g, "");
   return result;
 }
 
-export function sanitizeWindowInfo<T extends { title?: string; [key: string]: unknown }>(
-  w: T,
-): T {
-  if (!w || typeof w !== "object") return w;
-  const copy = { ...w };
-  if (typeof copy.title === "string") {
-    copy.title = sanitizeWindowTitle(copy.title);
-  }
-  return copy;
+export function sanitizeWindowInfo(w: WindowInventoryEntry): WindowInventoryEntry {
+  const result: WindowInventoryEntry = { id: typeof w.id === "string" ? w.id : "" };
+  if (typeof w.title === "string") result.title = sanitizeWindowTitle(w.title);
+  if (typeof w.wmClass === "string") result.wmClass = w.wmClass;
+  if (Number.isSafeInteger(w.pid) && Number(w.pid) > 0) result.pid = w.pid;
+  if (typeof w.isCurrentProfile === "boolean") result.isCurrentProfile = w.isCurrentProfile;
+  return result;
 }
 
 export function findWindowByClass<T extends { wmClass?: string; id?: string }>(
@@ -207,6 +243,8 @@ export function verifyWindowCloseEvidence(params: {
   afterObservation?: ExtendedComputerObservation;
   activeWindowBefore?: { id: string; title: string };
   requireFocusProof?: boolean;
+  /** Trusted verifier clock; tests may supply a fixed time. */
+  nowMs?: number;
 }): {
   verified: boolean;
   focusProofSatisfied?: boolean;
@@ -215,6 +253,7 @@ export function verifyWindowCloseEvidence(params: {
   reason?: string;
 } {
   const { targetWindowId, beforeObservation, afterObservation } = params;
+  const unverified = (reason: string) => ({ verified: false, reason });
 
   if (afterObservation?.windowInventoryStatus === "unknown") {
     return {
@@ -223,10 +262,108 @@ export function verifyWindowCloseEvidence(params: {
     };
   }
 
+  if (!targetWindowId || !beforeObservation || !afterObservation) {
+    return unverified("Missing target or before/after observation");
+  }
+  for (const obs of [beforeObservation, afterObservation]) {
+    if (
+      !Array.isArray(obs.windows) ||
+      (obs.windowInventoryStatus !== "validempty" &&
+        obs.windowInventoryStatus !== "validnonempty") ||
+      (obs.windowInventoryStatus === "validempty") !== (obs.windows.length === 0) ||
+      obs.windows.some((w) => !w || typeof w.id !== "string" || !w.id) ||
+      new Set(obs.windows.map((w) => w.id)).size !== obs.windows.length
+    ) {
+      return unverified("Window inventory is missing, unknown, or inconsistent");
+    }
+  }
+  const targetBefore = beforeObservation.windows?.find((w) => w.id === targetWindowId);
+  if (!targetBefore) {
+    return unverified("Target was not observed in the before inventory");
+  }
+  if (targetBefore.isCurrentProfile !== true) {
+    return unverified("Target window does not belong to current profile");
+  }
+  const beforeIdentity = sanitizeScreenIdentity(beforeObservation.screenIdentity);
+  const afterIdentity = sanitizeScreenIdentity(afterObservation.screenIdentity);
+  if (
+    !beforeIdentity?.computerId ||
+    !beforeIdentity.display ||
+    beforeIdentity.generation === undefined ||
+    !(beforeIdentity.profileFingerprint || beforeIdentity.profile) ||
+    !afterIdentity?.computerId ||
+    !afterIdentity.display ||
+    afterIdentity.generation === undefined ||
+    !(afterIdentity.profileFingerprint || afterIdentity.profile)
+  ) {
+    return unverified("Missing screen generation or profile identity");
+  }
+  for (const key of [
+    "computerId",
+    "botId",
+    "screenId",
+    "display",
+    "generation",
+    "profile",
+    "profileFingerprint",
+    "runId",
+    "leaseId",
+    "fence",
+  ] as const) {
+    const beforeValue = beforeObservation.screenIdentity?.[key];
+    const afterValue = afterObservation.screenIdentity?.[key];
+    if (
+      beforeValue !== afterValue ||
+      (beforeValue !== undefined &&
+        typeof beforeValue !== "string" &&
+        typeof beforeValue !== "number")
+    ) {
+      return unverified(`Screen context mismatch: ${key}`);
+    }
+  }
+  const nowMs = params.nowMs ?? Date.now();
+  const beforeMs = Date.parse(beforeObservation.capturedAt);
+  const afterMs = Date.parse(afterObservation.capturedAt);
+  if (
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(beforeMs) ||
+    !Number.isFinite(afterMs) ||
+    afterMs <= beforeMs ||
+    nowMs < afterMs ||
+    nowMs - beforeMs > 30_000 ||
+    beforeObservation.frameId === afterObservation.frameId
+  ) {
+    return unverified("Before/after observations are stale or not ordered");
+  }
+  for (const obs of [beforeObservation, afterObservation]) {
+    const inventoryMs = Date.parse(obs.windowInventoryFreshness ?? "");
+    const capturedMs = Date.parse(obs.capturedAt);
+    if (
+      !Number.isFinite(inventoryMs) ||
+      inventoryMs > capturedMs ||
+      capturedMs - inventoryMs > 5_000
+    ) {
+      return unverified("Window inventory is missing a fresh timestamp");
+    }
+  }
+  const observedFocus = beforeObservation.activeWindow;
+  const focusProofSatisfied =
+    observedFocus?.id === targetWindowId &&
+    (!params.activeWindowBefore || params.activeWindowBefore.id === observedFocus.id);
+  if (params.requireFocusProof && !focusProofSatisfied) {
+    return { verified: false, focusProofSatisfied: false, reason: "Target focus was not proven" };
+  }
+
   if (beforeObservation?.windows && afterObservation?.windows) {
     for (const bw of beforeObservation.windows) {
       if (bw.id === targetWindowId) continue;
-      const stillPresent = afterObservation.windows.some((aw) => aw.id === bw.id);
+      const stillPresent = afterObservation.windows.some(
+        (aw) =>
+          aw.id === bw.id &&
+          (bw.pid === undefined || aw.pid === bw.pid) &&
+          (bw.wmClass === undefined || aw.wmClass === bw.wmClass) &&
+          (bw.isCurrentProfile === undefined || aw.isCurrentProfile === bw.isCurrentProfile),
+      );
       if (!stillPresent) {
         return {
           verified: false,
@@ -247,7 +384,7 @@ export function verifyWindowCloseEvidence(params: {
 
   return {
     verified: true,
-    focusProofSatisfied: true,
+    focusProofSatisfied,
     preservedOtherWindows: true,
     closedWindowId: targetWindowId,
   };
@@ -257,14 +394,31 @@ export function assertComputerCoordinates(
   actions: readonly (ComputerAction | { x?: unknown; y?: unknown })[],
   dimensions: { width: number; height: number },
 ): void {
-  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
+  if (
+    !dimensions ||
+    !Number.isSafeInteger(dimensions.width) ||
+    !Number.isSafeInteger(dimensions.height) ||
+    dimensions.width <= 0 ||
+    dimensions.height <= 0
+  ) {
     throw new Error("Cannot dispatch input without a valid screen geometry");
   }
   for (const action of actions) {
-    if (action && typeof action === "object" && "x" in action && "y" in action) {
-      const x = Number(action.x);
-      const y = Number(action.y);
+    if (!action || typeof action !== "object") throw new Error("Invalid computer action");
+    const kind = "kind" in action ? String((action as { kind?: unknown }).kind ?? "") : "";
+    const pointer =
+      kind === "pointer" ||
+      kind === "click" ||
+      kind === "move" ||
+      kind === "down" ||
+      kind === "up";
+    if (pointer || "x" in action || "y" in action) {
+      const point = action as { x?: unknown; y?: unknown };
+      const x = point.x;
+      const y = point.y;
       if (
+        typeof x !== "number" ||
+        typeof y !== "number" ||
         !Number.isFinite(x) ||
         !Number.isFinite(y) ||
         x < 0 ||
@@ -273,7 +427,7 @@ export function assertComputerCoordinates(
         y >= dimensions.height
       ) {
         throw new Error(
-          `Coordinate (${action.x}, ${action.y}) is outside the ${dimensions.width}x${dimensions.height} desktop screen. No input was dispatched.`,
+          `Coordinate (${point.x}, ${point.y}) is outside the ${dimensions.width}x${dimensions.height} desktop screen. No input was dispatched.`,
         );
       }
     }
@@ -288,10 +442,27 @@ export type CoordinateMetadata = {
 
 const TRANSFORMED_MARKER = Symbol("transformed");
 
+function assertTransformDimensions(
+  dimensions: { width: number; height: number } | undefined,
+  label: string,
+): void {
+  if (!dimensions) return;
+  if (
+    !Number.isSafeInteger(dimensions.width) ||
+    !Number.isSafeInteger(dimensions.height) ||
+    dimensions.width <= 0 ||
+    dimensions.height <= 0
+  ) {
+    throw new Error(`Invalid ${label} dimensions for coordinate transform`);
+  }
+}
+
 export function transformCoordinatesWithMetadata(
   actions: readonly ComputerAction[],
   metadata: CoordinateMetadata,
 ): ComputerAction[] {
+  assertTransformDimensions(metadata.sourceDimensions, "source");
+  assertTransformDimensions(metadata.targetDimensions, "target");
   return actions.map((action) => {
     if (action.kind !== "pointer" || (action as any)[TRANSFORMED_MARKER]) {
       return action;
@@ -299,8 +470,20 @@ export function transformCoordinatesWithMetadata(
     let x = action.x;
     let y = action.y;
     if (metadata.normalized && metadata.targetDimensions) {
-      x = Math.round(x * metadata.targetDimensions.width);
-      y = Math.round(y * metadata.targetDimensions.height);
+      x =
+        x >= 0 && x <= 1
+          ? Math.min(
+              Math.round(x * metadata.targetDimensions.width),
+              metadata.targetDimensions.width - 1,
+            )
+          : Math.round(x * metadata.targetDimensions.width);
+      y =
+        y >= 0 && y <= 1
+          ? Math.min(
+              Math.round(y * metadata.targetDimensions.height),
+              metadata.targetDimensions.height - 1,
+            )
+          : Math.round(y * metadata.targetDimensions.height);
     } else if (metadata.sourceDimensions && metadata.targetDimensions) {
       x = Math.round((x * metadata.targetDimensions.width) / metadata.sourceDimensions.width);
       y = Math.round((y * metadata.targetDimensions.height) / metadata.sourceDimensions.height);
@@ -315,13 +498,20 @@ export function transformCoordinatesWithMetadata(
   });
 }
 
+export function visualFrameHash(frameId: string | undefined): string | undefined {
+  if (!frameId) return undefined;
+  return frameId.split(":")[0];
+}
+
 export function observationToolResult(
   observation: ExtendedComputerObservation,
   note = "computer observed",
   previousFrameId?: string,
   options?: ObservationToolOptions,
 ): AgentToolExecutionResult {
-  const unchanged = previousFrameId === observation.frameId;
+  const unchanged =
+    previousFrameId !== undefined &&
+    visualFrameHash(previousFrameId) === visualFrameHash(observation.frameId);
   const unchangedVisualCount = options?.unchangedVisualCount ?? 0;
   const visualLoop = unchanged && unchangedVisualCount >= MAX_CONSECUTIVE_UNCHANGED_VISUAL_ACTIONS;
   const sanitizedIdentity = sanitizeScreenIdentity(observation.screenIdentity);
@@ -341,9 +531,7 @@ export function observationToolResult(
     ...(observation.windowInventoryFreshness
       ? { windowInventoryFreshness: observation.windowInventoryFreshness }
       : {}),
-    ...(observation.windows
-      ? { windows: observation.windows.map(sanitizeWindowInfo) }
-      : {}),
+    ...(observation.windows ? { windows: observation.windows.map(sanitizeWindowInfo) } : {}),
     activeWindow: observation.activeWindow
       ? sanitizeWindowInfo(observation.activeWindow)
       : undefined,
@@ -398,7 +586,7 @@ export function advanceUnchangedVisualGuard(
   frameId: string,
   actionKey?: string,
 ): { streak: UnchangedVisualStreak; engaged: boolean } {
-  if (streak.frameId !== frameId) {
+  if (visualFrameHash(streak.frameId) !== visualFrameHash(frameId)) {
     return { streak: { frameId, count: 0 }, engaged: false };
   }
   if (!actionKey) return { streak, engaged: false };
@@ -424,7 +612,11 @@ export function unchangedVisualActionBlocked(
   );
 }
 
-const MUTATING_PAGE_BROWSER_TOOLS = new Set(["browser_navigate", "browser_act"]);
+const MUTATING_PAGE_BROWSER_TOOLS = new Set([
+  "browser_navigate",
+  "browser_act",
+  "browser_clear_origin_storage",
+]);
 
 function pageBrowserMutationSucceeded(result: unknown): boolean {
   if (!result || typeof result !== "object") return false;
@@ -477,11 +669,10 @@ function visualLoopGuidance(count: number) {
 }
 
 function finiteCoordinate(value: unknown, name: string) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0 || number > 100_000) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100_000) {
     throw new Error(`computer action ${name} must be a non-negative coordinate`);
   }
-  return number;
+  return value > 0 && value < 1 ? value : Math.round(value);
 }
 
 function boundedNumber(value: unknown, min: number, max: number, fallback: number) {

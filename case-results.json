@@ -1,0 +1,128 @@
+{
+  "channel": "offline AST-only; no production dispatch",
+  "sourceSha256Local": "c36f933e5a8c7cbebee7bbfb2a66449e6f7c3bb8ac54cdb1d753701e4d46408b",
+  "invalidPdfIndependentParser": "PdfReadError",
+  "falsePositiveCount": 0,
+  "results": [
+    {
+      "name": "pdf_markers_without_parseable_pdf",
+      "case": "doc-pdf",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "PDF generation failed or invalid artifact (used_render=True, verified_pdfs=0, status=completed)."
+      }
+    },
+    {
+      "name": "pdf_unrelated_render_effect_no_bytes",
+      "case": "doc-pdf",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "PDF generation failed or invalid artifact (used_render=True, verified_pdfs=0, status=completed)."
+      }
+    },
+    {
+      "name": "zcom_hostname_in_attacker_path",
+      "case": "zcom",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "PASS",
+        "claimTruthOutcome": "PASS",
+        "harnessStatus": "FAIL",
+        "reason": "Z.com login form not reached (handed off as blocker/redirect). Status: waiting_takeover."
+      }
+    },
+    {
+      "name": "zcom_origin_and_form_from_different_effects",
+      "case": "zcom",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "PASS",
+        "claimTruthOutcome": "PASS",
+        "harnessStatus": "FAIL",
+        "reason": "Z.com login form not reached (handed off as blocker/redirect). Status: waiting_takeover."
+      }
+    },
+    {
+      "name": "auth_missing_origin_missing_fill",
+      "case": "login",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "Protected login not completed with verified auth (request_secret=True, auth_success=False, status=completed)."
+      }
+    },
+    {
+      "name": "auth_target_in_wrong_hostname",
+      "case": "login",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "Protected login not completed with verified auth (request_secret=True, auth_success=False, status=completed)."
+      }
+    },
+    {
+      "name": "close_failed_inventory_zero",
+      "case": "close",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "Window close action unverified (dispatched_close=True, window_closed=False, conflict=False, status=completed)."
+      }
+    },
+    {
+      "name": "close_previous_run_inventory_zero",
+      "case": "close",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "Window close action unverified (dispatched_close=True, window_closed=False, conflict=False, status=completed)."
+      }
+    },
+    {
+      "name": "shopee_future_missing_bytes_wrong_origin",
+      "case": "shopee",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "FAIL",
+        "harnessStatus": "FAIL",
+        "reason": "Shopee search incomplete (nav=True, search_exec=True, results_url=False, valid_screen=False, status=completed)."
+      }
+    },
+    {
+      "name": "transcript_failed_unrelated_read_only",
+      "case": "doc-transcript",
+      "expected": "FAIL",
+      "actual": {
+        "goalOutcome": "FAIL",
+        "runtimeGateOutcome": "FAIL",
+        "claimTruthOutcome": "INCONCLUSIVE",
+        "harnessStatus": "FAIL",
+        "reason": "Run produced no genuine transcript tools, artifacts, or provenance."
+      }
+    }
+  ]
+}

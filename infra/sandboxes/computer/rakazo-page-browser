@@ -15,6 +15,7 @@ import os
 import socket
 import struct
 import sys
+import tempfile
 import time
 import threading
 import urllib.request
@@ -36,6 +37,14 @@ def cdp_port() -> int:
         return int(override)
     # rakazo-browser uses 9221 + display number (:1 -> 9222).
     return 9221 + display_num()
+
+
+def default_state_file(port: int | None = None) -> str:
+    override = os.environ.get("RAKAZO_BROWSER_STATE_FILE")
+    if override:
+        return override
+    resolved_port = port if port is not None else cdp_port()
+    return os.path.join(tempfile.gettempdir(), f"rakazo-page-browser-state-{resolved_port}.json")
 
 
 def http_get_json(url: str, timeout: float = 5.0) -> Any:
@@ -74,8 +83,9 @@ WORLD_NAME = "rakazo-page-browser"
 
 
 class CdpClient:
-    def __init__(self, ws_url: str) -> None:
+    def __init__(self, ws_url: str, *, state_file: str | None = None) -> None:
         self._ws_url = ws_url
+        self._state_file = state_file
         self._sock: socket.socket | None = None
         self._buf = bytearray()
         self._next_id = 1
@@ -87,7 +97,47 @@ class CdpClient:
         self._document_responses: dict[str, list[dict[str, Any]]] = {}
         self._document_failures: dict[str, list[dict[str, Any]]] = {}
         self._api_responses: dict[str, list[dict[str, Any]]] = {}
+        self._harvested_apis: list[dict[str, Any]] = []
         self._downloads: dict[str, dict[str, Any]] = {}
+        if self._state_file:
+            self.load_persisted_state()
+
+    def load_persisted_state(self) -> None:
+        if not self._state_file or not os.path.isfile(self._state_file):
+            return
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                return
+            downloads = data.get("downloads")
+            if isinstance(downloads, dict):
+                for guid, info in downloads.items():
+                    if isinstance(guid, str) and guid and isinstance(info, dict):
+                        self._downloads[guid] = dict(info)
+            apis = data.get("harvestedApis")
+            if isinstance(apis, list):
+                self._harvested_apis = [dict(a) for a in apis[-50:] if isinstance(a, dict)]
+        except Exception:
+            pass
+
+    def save_persisted_state(self) -> None:
+        if not self._state_file:
+            return
+        try:
+            parent = os.path.dirname(self._state_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp_path = f"{self._state_file}.{os.getpid()}.tmp"
+            payload = {
+                "downloads": self._downloads,
+                "harvestedApis": self._harvested_apis[-50:],
+            }
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False)
+            os.replace(tmp_path, self._state_file)
+        except Exception:
+            pass
 
     def connect(self) -> None:
         assert self._ws_url.startswith("ws://"), self._ws_url
@@ -333,6 +383,7 @@ class CdpClient:
                     "suggestedFilename": str(params.get("suggestedFilename") or "download"),
                     "state": "inProgress",
                 }
+                self.save_persisted_state()
         elif method == "Browser.downloadProgress":
             guid = str(params.get("guid") or "")
             if guid:
@@ -344,6 +395,7 @@ class CdpClient:
                     entry["totalBytes"] = int(params["totalBytes"])
                 if params.get("filePath"):
                     entry["filePath"] = str(params["filePath"])
+                self.save_persisted_state()
         elif method == "Network.loadingFailed":
             req_id = str(params.get("requestId") or "")
             req_entry = self._document_requests.get((sid, req_id))
@@ -1214,6 +1266,19 @@ def clear_origin_storage(
             storage_id["storageKey"] = storage_key
         client.call("DOMStorage.clear", {"storageId": storage_id}, session_id=session_id)
 
+    harvested = getattr(client, "_harvested_apis", None)
+    if isinstance(harvested, list):
+        client._harvested_apis = [
+            item
+            for item in harvested
+            if not (
+                isinstance(item, dict)
+                and str(item.get("url") or "").lower().startswith(origin.lower())
+            )
+        ]
+        if hasattr(client, "save_persisted_state"):
+            client.save_persisted_state()
+
     return {
         "ok": True,
         "origin": origin,
@@ -1413,21 +1478,42 @@ def click_selector(
             f"""(() => {{
                 const sel = {json.dumps(selector)};
                 let el = null;
-                if (/^e\\d+$/.test(sel) && window.__rakazoPageBrowser) {{
-                    el = window.__rakazoPageBrowser.resolve(sel);
+                if (/^e[0-9a-f]+$/i.test(sel)) {{
+                    if (window.__rakazoPageBrowser && typeof window.__rakazoPageBrowser.resolve === "function") {{
+                        el = window.__rakazoPageBrowser.resolve(sel);
+                    }}
+                    if (!el || el.isConnected === false) {{
+                        return {{ ok: false, clicked: false, error: `Stale element ref: ${{sel}}` }};
+                    }}
+                }} else {{
+                    try {{
+                        el = document.querySelector(sel);
+                    }} catch (err) {{
+                        return {{ ok: false, clicked: false, error: `Invalid selector: ${{sel}}` }};
+                    }}
+                    if (!el || el.isConnected === false) {{
+                        return {{ ok: false, clicked: false, error: `No element matches selector: ${{sel}}` }};
+                    }}
                 }}
-                if (!el) {{
-                    el = document.querySelector(sel);
-                }}
-                if (!el) {{
-                    return {{ ok: false, clicked: false, error: `No element matches selector: ${{sel}}` }};
+                const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) {{
+                    return {{ ok: false, clicked: false, error: `Element has no visible box: ${{sel}}` }};
                 }}
                 const rect = el.getBoundingClientRect();
                 if (rect.width <= 0 || rect.height <= 0) {{
                     return {{ ok: false, clicked: false, error: `Element has no visible box: ${{sel}}` }};
                 }}
-                if (el.disabled || el.getAttribute("aria-disabled") === "true") {{
-                    return {{ ok: false, clicked: false, error: `Element is disabled: ${{sel}}` }};
+                let cur = el;
+                while (cur) {{
+                    if (
+                        (cur.hasAttribute && cur.hasAttribute("disabled")) ||
+                        (cur.getAttribute && cur.getAttribute("aria-disabled") === "true") ||
+                        (cur.matches && cur.matches(":disabled")) ||
+                        cur.disabled === true
+                    ) {{
+                        return {{ ok: false, clicked: false, error: `Element is disabled: ${{sel}}` }};
+                    }}
+                    cur = cur.parentElement || (cur.getRootNode && cur.getRootNode().host);
                 }}
                 el.focus();
                 el.click();
@@ -1446,25 +1532,71 @@ def click_selector(
         return {"ok": False, "clicked": False, "error": str(exc)}
 
 
-def harvest_json_apis(
-    client: CdpClient,
-    session_id: str,
-    args: dict[str, Any],
-) -> dict[str, Any]:
-    url_filter = str(args.get("urlFilter") or "").strip().lower()
-    max_items = min(max(int(args.get("maxItems") or 10), 1), 50)
-    store = getattr(client, "_api_responses", {})
-    entries = list((store.get(session_id) or store.get("") or []))
-    matched: list[dict[str, Any]] = []
-    for item in reversed(entries):
+SENSITIVE_JSON_KEY_SUBSTRINGS = (
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "api_key",
+    "apikey",
+    "client_secret",
+    "private_key",
+    "session_id",
+    "sessionid",
+    "otp",
+    "totp",
+)
+MAX_HARVEST_ITEM_BYTES = 16 * 1024
+MAX_HARVEST_TOTAL_BYTES = 64 * 1024
+
+
+def redact_sensitive_json(value: Any, depth: int = 0) -> Any:
+    if depth > 12:
+        return "[TRUNCATED_DEPTH]"
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for k, v in value.items():
+            key_str = str(k)
+            key_lower = key_str.lower()
+            if any(marker in key_lower for marker in SENSITIVE_JSON_KEY_SUBSTRINGS):
+                sanitized[key_str] = "[REDACTED]"
+            else:
+                sanitized[key_str] = redact_sensitive_json(v, depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        return [redact_sensitive_json(item, depth + 1) for item in value[:100]]
+    if isinstance(value, str) and len(value) > 4000:
+        return value[:4000] + "...[TRUNCATED]"
+    return value
+
+
+def materialize_api_entries(client: CdpClient, session_id: str) -> list[dict[str, Any]]:
+    store = getattr(client, "_api_responses", None)
+    harvested = getattr(client, "_harvested_apis", None)
+    if not isinstance(harvested, list):
+        harvested = []
+        setattr(client, "_harvested_apis", harvested)
+    if not isinstance(store, dict):
+        return harvested
+
+    pending_entries: list[dict[str, Any]] = []
+    for key in (session_id, ""):
+        bucket = store.get(key)
+        if isinstance(bucket, list) and bucket:
+            pending_entries.extend(bucket)
+            store[key] = []
+
+    for item in pending_entries:
         if not isinstance(item, dict):
             continue
         u = str(item.get("url") or "")
-        if url_filter and url_filter not in u.lower():
-            continue
         req_id = str(item.get("requestId") or "")
-        body_data: Any = None
-        if req_id:
+        body_data: Any = item.get("data")
+        if body_data is None and req_id:
             try:
                 raw_body = client.call(
                     "Network.getResponseBody",
@@ -1481,14 +1613,59 @@ def harvest_json_apis(
                     body_data = body_str[:4000]
             except Exception:
                 body_data = None
-        matched.append(
-            {
-                "url": u,
-                "status": item.get("status"),
-                "mimeType": item.get("mimeType"),
-                **({"data": body_data} if body_data is not None else {}),
-            }
-        )
+        if body_data is not None:
+            body_data = redact_sensitive_json(body_data)
+            try:
+                encoded = json.dumps(body_data, ensure_ascii=False)
+                if len(encoded.encode("utf-8")) > MAX_HARVEST_ITEM_BYTES:
+                    body_data = {
+                        "truncated": True,
+                        "preview": encoded[:4000],
+                    }
+            except Exception:
+                body_data = str(body_data)[:4000]
+        record: dict[str, Any] = {
+            "url": u,
+            "status": item.get("status"),
+            "mimeType": item.get("mimeType"),
+            **({"data": body_data} if body_data is not None else {}),
+        }
+        harvested.append(record)
+    if len(harvested) > 50:
+        del harvested[:-50]
+    if hasattr(client, "save_persisted_state"):
+        client.save_persisted_state()
+    return harvested
+
+
+def harvest_json_apis(
+    client: CdpClient,
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    url_filter = str(args.get("urlFilter") or "").strip().lower()
+    max_items = min(max(int(args.get("maxItems") or 10), 1), 50)
+    entries = materialize_api_entries(client, session_id)
+    matched: list[dict[str, Any]] = []
+    total_bytes = 0
+    for item in reversed(entries):
+        if not isinstance(item, dict):
+            continue
+        u = str(item.get("url") or "")
+        if url_filter and url_filter not in u.lower():
+            continue
+        sanitized_item: dict[str, Any] = {
+            "url": u,
+            "status": item.get("status"),
+            "mimeType": item.get("mimeType"),
+        }
+        if "data" in item and item["data"] is not None:
+            sanitized_item["data"] = redact_sensitive_json(item["data"])
+        item_bytes = len(json.dumps(sanitized_item, ensure_ascii=False).encode("utf-8"))
+        if matched and total_bytes + item_bytes > MAX_HARVEST_TOTAL_BYTES:
+            break
+        total_bytes += item_bytes
+        matched.append(sanitized_item)
         if len(matched) >= max_items:
             break
     return {"ok": True, "apis": matched}
@@ -1570,20 +1747,65 @@ def observe_challenge_state(client: CdpClient, session_id: str) -> dict[str, Any
                   '[name="cf-turnstile-response"], [name="g-recaptcha-response"], [name="h-captcha-response"]'
                 )
               );
-              const hasToken = tokenInputs.some((el) => typeof el.value === "string" && el.value.trim().length > 0);
+              const tokens = tokenInputs
+                .map((el) => (typeof el.value === "string" ? el.value.trim() : ""))
+                .filter((v) => v.length > 0);
+              const hasToken = tokens.length > 0;
+              const tokenValue = tokens.join("|");
               const hasChallengeDom = Boolean(
                 document.querySelector(
                   '#challenge-running, #challenge-form, #cf-challenge-running, iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile, .g-recaptcha, .h-captcha'
                 )
               );
+              let httpStatus = null;
+              try {
+                const nav = performance.getEntriesByType("navigation")[0];
+                if (nav && typeof nav.responseStatus === "number" && nav.responseStatus > 0) {
+                  httpStatus = nav.responseStatus;
+                }
+              } catch (e) {}
               const title = (document.title || "").slice(0, 200);
               const bodySnippet = (document.body && document.body.innerText ? document.body.innerText : "").slice(0, 1000);
-              return { hasToken, hasChallengeDom, title, bodySnippet, url: location.href };
+              return { hasToken, tokenValue, hasChallengeDom, httpStatus, title, bodySnippet, url: location.href };
             })()""",
         )
         return info if isinstance(info, dict) else None
     except Exception:
         return None
+
+
+def _is_error_page_observation(
+    client: CdpClient,
+    session_id: str,
+    obs: dict[str, Any],
+) -> bool:
+    url = str(obs.get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return True
+    obs_status = obs.get("httpStatus")
+    if isinstance(obs_status, int) and not isinstance(obs_status, bool) and obs_status >= 400:
+        return True
+    doc_resp = find_document_response(client, session_id, None, None)
+    if isinstance(doc_resp, dict):
+        cdp_status = doc_resp.get("status")
+        if isinstance(cdp_status, int) and not isinstance(cdp_status, bool) and cdp_status >= 400:
+            return True
+    if find_document_failure(client, session_id, None, None) is not None:
+        return True
+    combined = f"{obs.get('title') or ''}\n{obs.get('bodySnippet') or ''}".lower()
+    error_markers = (
+        "502 bad gateway",
+        "503 service temporarily unavailable",
+        "504 gateway time-out",
+        "500 internal server error",
+        "403 forbidden",
+        "404 not found",
+        "this site can’t be reached",
+        "this site can't be reached",
+        "err_connection_",
+        "err_name_not_resolved",
+    )
+    return any(marker in combined for marker in error_markers)
 
 
 def solve_challenge(
@@ -1613,12 +1835,14 @@ def solve_challenge(
                 "dispatched": False,
                 "status": "no_widget",
                 "solved": False,
+                "businessGoalVerified": False,
                 "requiresTakeover": True,
                 "fallback": "request_takeover",
                 "error": "No challenge widget located on page",
             }
         target_x = int(box["x"])
         target_y = int(box["y"])
+    pre = observe_challenge_state(client, session_id)
     start_x = int(args.get("startX") or max(10, int(target_x) - 140))
     start_y = int(args.get("startY") or max(10, int(target_y) - 90))
     trajectory = bezier_pointer_points(start_x, start_y, float(target_x), float(target_y), steps=12)
@@ -1644,25 +1868,47 @@ def solve_challenge(
         time.sleep(min(settle_ms, 5000) / 1000.0)
     post = observe_challenge_state(client, session_id)
     if isinstance(post, dict):
-        still_challenged = (
-            not bool(post.get("hasToken"))
-            and (
-                bool(post.get("hasChallengeDom"))
-                or detect_challenge_page(
-                    str(post.get("title") or ""),
-                    str(post.get("bodySnippet") or ""),
-                    bool(post.get("hasChallengeDom")),
-                    None,
-                )
-                is not None
-            )
+        if _is_error_page_observation(client, session_id, post):
+            return {
+                "ok": False,
+                "dispatched": True,
+                "status": "navigation_error",
+                "solved": False,
+                "businessGoalVerified": False,
+                "requiresTakeover": True,
+                "fallback": "request_takeover",
+                "clickedAt": {"x": fx, "y": fy},
+                "trajectoryPoints": len(trajectory),
+                "error": "Page navigated to an error page during challenge verification; request user takeover.",
+            }
+        post_has_token = bool(post.get("hasToken"))
+        post_token_val = str(post.get("tokenValue") or "")
+        pre_has_token = bool(pre.get("hasToken")) if isinstance(pre, dict) else False
+        pre_token_val = str(pre.get("tokenValue") or "") if isinstance(pre, dict) else ""
+        # A pre-existing token that did not change after clicking is stale.
+        stale_preexisting_token = pre_has_token and (
+            not post_has_token or post_token_val == pre_token_val
         )
-        if bool(post.get("hasToken")) or not still_challenged:
+        fresh_token = post_has_token and not stale_preexisting_token
+        post_has_dom = bool(post.get("hasChallengeDom"))
+        post_text_challenge = detect_challenge_page(
+            str(post.get("title") or ""),
+            str(post.get("bodySnippet") or ""),
+            False,
+            post.get("httpStatus") if isinstance(post.get("httpStatus"), int) else None,
+        )
+        still_challenged = (
+            stale_preexisting_token
+            or post_has_dom
+            or (not fresh_token and post_text_challenge is not None)
+        )
+        if not still_challenged and (fresh_token or not post_has_dom):
             return {
                 "ok": True,
                 "dispatched": True,
                 "status": "verified",
                 "solved": True,
+                "businessGoalVerified": False,
                 "clickedAt": {"x": fx, "y": fy},
                 "trajectoryPoints": len(trajectory),
             }
@@ -1671,6 +1917,7 @@ def solve_challenge(
             "dispatched": True,
             "status": "still_challenged",
             "solved": False,
+            "businessGoalVerified": False,
             "requiresTakeover": True,
             "fallback": "request_takeover",
             "clickedAt": {"x": fx, "y": fy},
@@ -1682,12 +1929,23 @@ def solve_challenge(
         "dispatched": True,
         "status": "unknown",
         "solved": False,
+        "businessGoalVerified": False,
         "requiresTakeover": True,
         "fallback": "request_takeover",
         "clickedAt": {"x": fx, "y": fy},
         "trajectoryPoints": len(trajectory),
         "error": "Challenge state could not be verified after click; request user takeover.",
     }
+
+
+def flush_and_persist_state(client: CdpClient, session_id: str | None = None) -> None:
+    if session_id:
+        try:
+            materialize_api_entries(client, session_id)
+        except Exception:
+            pass
+    if hasattr(client, "save_persisted_state"):
+        client.save_persisted_state()
 
 
 def exit_when_stdin_closes() -> None:
@@ -1736,8 +1994,9 @@ def run(argv: list[str]) -> int:
     try:
         wait_for_cdp(port)
         ws_url = discover_ws_url(port)
-        client = CdpClient(ws_url)
+        client = CdpClient(ws_url, state_file=default_state_file(port))
         client.connect()
+        session_id: str | None = None
         try:
             session_id = attach_page(client)
             if command == "navigate":
@@ -1772,9 +2031,11 @@ def run(argv: list[str]) -> int:
                 }
                 print(json.dumps(result))
                 return 2
+            flush_and_persist_state(client, session_id)
             print(json.dumps(result))
             return 0  # Structured failures preserve partial action progress.
         finally:
+            flush_and_persist_state(client, session_id)
             client.close()
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"ok": False, "error": str(exc), "fallback": "computer_act",

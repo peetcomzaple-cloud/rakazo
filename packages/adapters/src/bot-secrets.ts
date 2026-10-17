@@ -609,16 +609,45 @@ export type LoginField = "username" | "password" | "totp";
 const MIN_REDACTED_USERNAME = 6;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
+export function parseOtpauthTotpUri(input: string): {
+  secret: string;
+  algorithm: "SHA1";
+  digits: 6;
+  period: 30;
+} {
+  let parsed: URL;
+  try {
+    parsed = new URL(input.trim());
+  } catch {
+    throw new Error("Invalid otpauth:// URI");
+  }
+  const type = (parsed.hostname || parsed.host || parsed.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
+  if (parsed.protocol.toLowerCase() !== "otpauth:" || type !== "totp") {
+    throw new Error(`Unsupported OTP URI type: ${type || "unknown"} (only totp is supported)`);
+  }
+  const secret = parsed.searchParams.get("secret")?.trim() ?? "";
+  if (!secret) {
+    throw new Error("Missing secret parameter in otpauth:// URI");
+  }
+  const rawAlg = parsed.searchParams.get("algorithm")?.trim();
+  if (rawAlg && rawAlg.toUpperCase() !== "SHA1") {
+    throw new Error(`Unsupported TOTP algorithm: ${rawAlg}`);
+  }
+  const rawDigits = parsed.searchParams.get("digits")?.trim();
+  if (rawDigits && rawDigits !== "6") {
+    throw new Error(`Unsupported TOTP digits: ${rawDigits}`);
+  }
+  const rawPeriod = parsed.searchParams.get("period")?.trim();
+  if (rawPeriod && rawPeriod !== "30") {
+    throw new Error(`Unsupported TOTP period: ${rawPeriod}`);
+  }
+  return { secret, algorithm: "SHA1", digits: 6, period: 30 };
+}
+
 export function decodeBase32Secret(input: string): Buffer {
   let raw = input.trim();
   if (raw.toLowerCase().startsWith("otpauth://")) {
-    try {
-      const parsed = new URL(raw);
-      const param = parsed.searchParams.get("secret");
-      if (param) raw = param;
-    } catch {
-      /* treat as raw secret */
-    }
+    raw = parseOtpauthTotpUri(raw).secret;
   }
   const cleaned = raw.toUpperCase().replace(/[\s\-=]+/g, "");
   if (!cleaned) throw new Error("Empty TOTP secret");
@@ -635,6 +664,7 @@ export function decodeBase32Secret(input: string): Buffer {
       bits -= 8;
     }
   }
+  if (bytes.length === 0) throw new Error("Empty TOTP secret");
   return Buffer.from(bytes);
 }
 
@@ -647,6 +677,15 @@ export function generateTotpCode(
   periodSec = 30,
   digits = 6,
 ): string {
+  if (!Number.isInteger(periodSec) || periodSec !== 30) {
+    throw new Error(`Unsupported TOTP period: ${periodSec}`);
+  }
+  if (!Number.isInteger(digits) || digits !== 6) {
+    throw new Error(`Unsupported TOTP digits: ${digits}`);
+  }
+  if (!Number.isFinite(timestampMs) || timestampMs < 0) {
+    throw new Error("Invalid TOTP timestamp");
+  }
   const key = decodeBase32Secret(secretInput);
   const counter = BigInt(Math.floor(timestampMs / 1000 / periodSec));
   const counterBuf = Buffer.alloc(8);
@@ -743,13 +782,27 @@ export async function resolveLoginFill(input: {
         if (!matched) return { error: "origin mismatch" };
         effectiveOrigin = matched;
       }
+      const totpRedactions: string[] = [];
+      if (login.totpSecret) {
+        totpRedactions.push(login.totpSecret, encodeURIComponent(login.totpSecret));
+        if (login.totpSecret.trim().toLowerCase().startsWith("otpauth://")) {
+          try {
+            const rawSeed = parseOtpauthTotpUri(login.totpSecret).secret;
+            totpRedactions.push(rawSeed, encodeURIComponent(rawSeed));
+          } catch {
+            /* handled below when field === "totp" */
+          }
+        }
+      }
       const baseRedactions = [
         ...new Set(
-          [login.password, encodeURIComponent(login.password)].concat(
-            login.username.length >= MIN_REDACTED_USERNAME
-              ? [login.username, encodeURIComponent(login.username)]
-              : [],
-          ),
+          [login.password, encodeURIComponent(login.password)]
+            .concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            )
+            .concat(totpRedactions),
         ),
       ];
       if (input.field === "totp") {
@@ -761,7 +814,7 @@ export async function resolveLoginFill(input: {
           return {
             text: code,
             origin: effectiveOrigin,
-            redactions: [...new Set([...baseRedactions, login.totpSecret, code])],
+            redactions: [...new Set([...baseRedactions, code])],
           };
         } catch {
           return { error: "Invalid TOTP secret configured for this login." };
@@ -832,13 +885,27 @@ export async function resolveLoginFill(input: {
         if (!matched) return { error: "origin mismatch" };
         effectiveOrigin = matched;
       }
+      const totpRedactions: string[] = [];
+      if (login.totpSecret) {
+        totpRedactions.push(login.totpSecret, encodeURIComponent(login.totpSecret));
+        if (login.totpSecret.trim().toLowerCase().startsWith("otpauth://")) {
+          try {
+            const rawSeed = parseOtpauthTotpUri(login.totpSecret).secret;
+            totpRedactions.push(rawSeed, encodeURIComponent(rawSeed));
+          } catch {
+            /* handled below when field === "totp" */
+          }
+        }
+      }
       const baseRedactions = [
         ...new Set(
-          [login.password, encodeURIComponent(login.password)].concat(
-            login.username.length >= MIN_REDACTED_USERNAME
-              ? [login.username, encodeURIComponent(login.username)]
-              : [],
-          ),
+          [login.password, encodeURIComponent(login.password)]
+            .concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            )
+            .concat(totpRedactions),
         ),
       ];
       if (input.field === "totp") {
@@ -850,7 +917,7 @@ export async function resolveLoginFill(input: {
           return {
             text: code,
             origin: effectiveOrigin,
-            redactions: [...new Set([...baseRedactions, login.totpSecret, code])],
+            redactions: [...new Set([...baseRedactions, code])],
           };
         } catch {
           return { error: "Invalid TOTP secret configured for this login." };

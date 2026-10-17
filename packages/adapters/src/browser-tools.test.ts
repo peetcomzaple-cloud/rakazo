@@ -491,20 +491,81 @@ describe("browser tools", () => {
     });
   });
 
-  it("supports totp field in fill_secret and verifies RFC 6238 TOTP and multi-origin SSO allowlists", async () => {
+  it("supports totp field in fill_secret and verifies RFC 6238 TOTP, URI validation, redaction, and multi-origin SSO allowlists", async () => {
     const { generateTotpCode, isOriginAllowedForLogin } = await import("./bot-secrets.js");
     expect(
       parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "totp" }]),
     ).toEqual([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "totp" }]);
 
-    // RFC 6238 deterministic check with Base32 seed JBSWY3DPEHPK3PXP
+    // RFC 6238 Appendix B SHA1 test vectors for ASCII "12345678901234567890"
+    const rfcSeed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    expect(generateTotpCode(rfcSeed, 59_000)).toBe("287082");
+    expect(generateTotpCode(rfcSeed, 1_111_111_109_000)).toBe("081804");
+
+    // Base32 and valid otpauth://totp URI parity
     const code1 = generateTotpCode("JBSWY3DPEHPK3PXP", 59_000);
     const code2 = generateTotpCode(
-      "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example",
+      "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=6&period=30",
       59_000,
     );
     expect(code1).toMatch(/^\d{6}$/);
     expect(code1).toBe(code2);
+
+    // Rejects unsupported OTP URI types, missing secret, and unsupported algorithm/digits/period
+    expect(() =>
+      generateTotpCode("otpauth://hotp/Example:alice?secret=JBSWY3DPEHPK3PXP", 59_000),
+    ).toThrow(/only totp is supported/i);
+    expect(() =>
+      generateTotpCode("otpauth://totp/Example:alice?issuer=Example", 59_000),
+    ).toThrow(/Missing secret/i);
+    expect(() =>
+      generateTotpCode(
+        "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256",
+        59_000,
+      ),
+    ).toThrow(/Unsupported TOTP algorithm/i);
+    expect(() =>
+      generateTotpCode("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&digits=8", 59_000),
+    ).toThrow(/Unsupported TOTP digits/i);
+    expect(() =>
+      generateTotpCode("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&period=60", 59_000),
+    ).toThrow(/Unsupported TOTP period/i);
+
+    // Redacts both seed and generated code from browserActFromTool results
+    const browser = new FakeBrowserProvider({
+      pages: {
+        "https://login.example.test/mfa": {
+          title: "MFA",
+          html: `<!doctype html><html><head><title>MFA</title></head><body>
+            <input aria-label="One-time code" type="text" />
+          </body></html>`,
+        },
+      },
+    });
+    await browserNavigateFromTool(browser, computer, context, {
+      url: "https://login.example.test/mfa",
+    });
+    const snap = (await browserSnapshotFromTool(browser, computer, context, {})) as {
+      elements: Array<{ ref: string; name: string }>;
+    };
+    const otpRef = snap.elements.find((el) => el.name.includes("One-time"))!.ref;
+    const activeRedactions = ["JBSWY3DPEHPK3PXP", code1];
+    const acted = await browserActFromTool(
+      browser,
+      computer,
+      context,
+      { actions: [{ kind: "fill_secret", ref: otpRef, secret: "site_login", field: "totp" }] },
+      {
+        resolveSecretFill: async () => ({
+          text: code1,
+          origin: "https://login.example.test",
+        }),
+        redactions: () => activeRedactions,
+      },
+    );
+    expect(acted).toMatchObject({ ok: true, completed: 1 });
+    expect(JSON.stringify(acted)).not.toContain(code1);
+    expect(JSON.stringify(acted)).not.toContain("JBSWY3DPEHPK3PXP");
 
     // Multi-origin SSO allowlist check
     expect(

@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -14,6 +15,23 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_STATUS_FILE = "/tmp/rakazo/playlist-recorder-status.json"
+_ACTIVE_FFMPEG_PROC: subprocess.Popen[str] | None = None
+_STOP_REQUESTED = False
+
+
+def _terminate_active_ffmpeg() -> None:
+    global _ACTIVE_FFMPEG_PROC
+    proc = _ACTIVE_FFMPEG_PROC
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    _ACTIVE_FFMPEG_PROC = None
 
 
 def write_status(status_path: Path, payload: dict[str, Any]) -> None:
@@ -100,6 +118,24 @@ def convert_to_mp3(video_path: Path, mp3_path: Path) -> bool:
     return proc.returncode == 0 and mp3_path.exists() and mp3_path.stat().st_size > 0
 
 
+def has_live_pulse_source(audio_source: str) -> bool:
+    if not shutil.which("pactl"):
+        return False
+    try:
+        proc = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if proc.returncode != 0:
+            return False
+        stdout = proc.stdout or ""
+        return audio_source in stdout or bool(stdout.strip())
+    except Exception:
+        return False
+
+
 def record_screen_clip(
     output_mp4: Path,
     duration_sec: int,
@@ -108,6 +144,7 @@ def record_screen_clip(
     resolution: str = "1280x800",
     framerate: int = 24,
 ) -> bool:
+    global _ACTIVE_FFMPEG_PROC
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg",
@@ -124,9 +161,10 @@ def record_screen_clip(
         "-i",
         display,
     ]
-    has_pulse = shutil.which("pactl") is not None
-    if has_pulse:
+    if has_live_pulse_source(audio_source):
         cmd.extend(["-f", "pulse", "-i", audio_source])
+    else:
+        cmd.extend(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
     cmd.extend(
         [
             "-t",
@@ -137,13 +175,26 @@ def record_screen_clip(
             "veryfast",
             "-pix_fmt",
             "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            str(output_mp4),
         ]
     )
-    if has_pulse:
-        cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-    cmd.append(str(output_mp4))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode == 0 and output_mp4.exists() and output_mp4.stat().st_size > 0
+    if hasattr(subprocess, "Popen"):
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _ACTIVE_FFMPEG_PROC = proc
+        try:
+            proc.communicate()
+            returncode = proc.returncode
+        finally:
+            _ACTIVE_FFMPEG_PROC = None
+    else:
+        completed = subprocess.run(cmd, capture_output=True, text=True)
+        returncode = completed.returncode
+    return returncode == 0 and output_mp4.exists() and output_mp4.stat().st_size > 0
 
 
 def upload_with_rclone(local_path: Path, rclone_dest: str) -> bool:
@@ -176,6 +227,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = False
     args = parse_args(sys.argv[1:] if argv is None else argv)
     status_path = Path(args.status_file)
     if args.status_only:
@@ -212,85 +265,111 @@ def main(argv: list[str] | None = None) -> int:
     }
     write_status(status_path, status_payload)
 
+    def _handle_stop_signal(signum: int, _frame: Any) -> None:
+        global _STOP_REQUESTED
+        _STOP_REQUESTED = True
+        _terminate_active_ffmpeg()
+        status_payload["status"] = "stopped"
+        status_payload["stoppedBySignal"] = int(signum)
+        write_status(status_path, status_payload)
+
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, _handle_stop_signal)
+    signal.signal(signal.SIGTERM, _handle_stop_signal)
+
     display = os.environ.get("DISPLAY", ":1")
     aborted_by_navigation_error = False
 
-    for idx in range(1, total_clips + 1):
-        if idx in completed_indices:
-            continue
-
-        clip_url = urls[idx - 1] if idx - 1 < len(urls) else ""
-        status_payload["currentClip"] = idx
-        status_payload["currentUrl"] = clip_url
-        write_status(status_path, status_payload)
-
-        nav_result: dict[str, Any] | None = None
-        if clip_url:
-            nav_result = navigate_url(clip_url)
-            if nav_result.get("ok") is not True:
-                clip_record = {
-                    "index": idx,
-                    "url": clip_url,
-                    "mp4": None,
-                    "mp3": None,
-                    "uploaded": False,
-                    "ok": False,
-                    "navigationError": nav_result.get("error") or "Navigation failed",
-                }
-                completed_clips.append(clip_record)
-                status_payload["clips"] = completed_clips
-                write_status(status_path, status_payload)
+    try:
+        for idx in range(1, total_clips + 1):
+            if _STOP_REQUESTED:
+                break
+            if idx in completed_indices:
                 continue
-            time.sleep(2.0)
 
-        stem = f"clip_{idx:02d}"
-        mp4_path = out_dir / f"{stem}.mp4"
-        mp3_path = out_dir / f"{stem}.mp3"
+            clip_url = urls[idx - 1] if idx - 1 < len(urls) else ""
+            status_payload["currentClip"] = idx
+            status_payload["currentUrl"] = clip_url
+            write_status(status_path, status_payload)
 
-        recorded = record_screen_clip(
-            output_mp4=mp4_path,
-            duration_sec=max(1, args.duration),
-            display=display,
+            nav_result: dict[str, Any] | None = None
+            if clip_url:
+                nav_result = navigate_url(clip_url)
+                if nav_result.get("ok") is not True:
+                    clip_record = {
+                        "index": idx,
+                        "url": clip_url,
+                        "mp4": None,
+                        "mp3": None,
+                        "uploaded": False,
+                        "ok": False,
+                        "navigationError": nav_result.get("error") or "Navigation failed",
+                    }
+                    completed_clips.append(clip_record)
+                    status_payload["clips"] = completed_clips
+                    write_status(status_path, status_payload)
+                    continue
+                time.sleep(2.0)
+
+            stem = f"clip_{idx:02d}"
+            mp4_path = out_dir / f"{stem}.mp4"
+            mp3_path = out_dir / f"{stem}.mp3"
+
+            recorded = record_screen_clip(
+                output_mp4=mp4_path,
+                duration_sec=max(1, args.duration),
+                display=display,
+            )
+            if _STOP_REQUESTED:
+                break
+            mp3_ok = convert_to_mp3(mp4_path, mp3_path) if recorded else False
+            uploaded = False
+            if args.rclone_dest and mp3_ok:
+                uploaded = upload_with_rclone(mp3_path, args.rclone_dest)
+
+            clip_ok = bool(recorded and mp3_ok and (uploaded if args.rclone_dest else True))
+            clip_record = {
+                "index": idx,
+                "url": (nav_result or {}).get("url") or clip_url,
+                "title": (nav_result or {}).get("title"),
+                "mp4": str(mp4_path) if recorded else None,
+                "mp3": str(mp3_path) if mp3_ok else None,
+                "uploaded": uploaded,
+                "ok": clip_ok,
+            }
+            if clip_ok:
+                completed_indices.add(idx)
+
+            if args.next_selector and idx < total_clips:
+                adv = advance_next_clip(args.next_selector)
+                clip_record["advancedNext"] = bool(adv.get("ok"))
+                if adv.get("ok") is not True:
+                    clip_record["advanceError"] = adv.get("error") or "Failed to advance to next clip"
+                    aborted_by_navigation_error = True
+                else:
+                    time.sleep(1.5)
+
+            completed_clips.append(clip_record)
+            status_payload["completedIndices"] = sorted(completed_indices)
+            status_payload["clips"] = completed_clips
+            write_status(status_path, status_payload)
+
+            if aborted_by_navigation_error or _STOP_REQUESTED:
+                break
+    finally:
+        _terminate_active_ffmpeg()
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    if _STOP_REQUESTED:
+        status_payload["status"] = "stopped"
+    else:
+        status_payload["status"] = (
+            "completed"
+            if len(completed_indices) == total_clips and not aborted_by_navigation_error
+            else "partial"
         )
-        mp3_ok = convert_to_mp3(mp4_path, mp3_path) if recorded else False
-        uploaded = False
-        if args.rclone_dest and mp3_ok:
-            uploaded = upload_with_rclone(mp3_path, args.rclone_dest)
-
-        clip_record = {
-            "index": idx,
-            "url": (nav_result or {}).get("url") or clip_url,
-            "title": (nav_result or {}).get("title"),
-            "mp4": str(mp4_path) if recorded else None,
-            "mp3": str(mp3_path) if mp3_ok else None,
-            "uploaded": uploaded,
-            "ok": recorded,
-        }
-        if recorded:
-            completed_indices.add(idx)
-
-        if args.next_selector and idx < total_clips:
-            adv = advance_next_clip(args.next_selector)
-            clip_record["advancedNext"] = bool(adv.get("ok"))
-            if adv.get("ok") is not True:
-                clip_record["advanceError"] = adv.get("error") or "Failed to advance to next clip"
-                aborted_by_navigation_error = True
-            else:
-                time.sleep(1.5)
-
-        completed_clips.append(clip_record)
-        status_payload["completedIndices"] = sorted(completed_indices)
-        status_payload["clips"] = completed_clips
-        write_status(status_path, status_payload)
-
-        if aborted_by_navigation_error:
-            break
-
-    status_payload["status"] = (
-        "completed"
-        if len(completed_indices) == total_clips and not aborted_by_navigation_error
-        else "partial"
-    )
     write_status(status_path, status_payload)
     print(json.dumps(status_payload, ensure_ascii=False, indent=2))
     return 0 if status_payload["status"] == "completed" else 1

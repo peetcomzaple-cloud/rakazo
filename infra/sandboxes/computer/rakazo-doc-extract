@@ -62,10 +62,15 @@ def extract_pdf(pdf_path: Path, lang: str = "tha+eng", min_chars_per_page: int =
                             used_ocr = True
                             ocr_pages += 1
             pages_output.append({"page": idx, "ocr": used_ocr, "text": text})
-    except Exception:
-        # Fallback to pdftotext if pypdf is unavailable
+    except Exception as exc:
+        if not shutil.which("pdftotext"):
+            raise RuntimeError(f"Failed to parse PDF: {exc}") from exc
         proc = subprocess.run(["pdftotext", str(pdf_path), "-"], capture_output=True, text=True)
-        raw_text = proc.stdout.strip() if proc.returncode == 0 else ""
+        if proc.returncode != 0:
+            raise RuntimeError(
+                (proc.stderr or "").strip() or f"Failed to parse PDF: {exc}"
+            ) from exc
+        raw_text = proc.stdout.strip()
         pages_output.append({"page": 1, "ocr": False, "text": raw_text})
         total_pages = 1
 
@@ -95,12 +100,18 @@ def extract_docx(docx_path: Path) -> dict[str, Any]:
             "type": "docx",
             "text": "\n".join(blocks),
         }
-    except Exception:
+    except Exception as exc:
+        if not shutil.which("pandoc"):
+            raise RuntimeError(f"Failed to parse DOCX: {exc}") from exc
         proc = subprocess.run(["pandoc", str(docx_path), "-t", "markdown"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                (proc.stderr or "").strip() or f"Failed to parse DOCX: {exc}"
+            ) from exc
         return {
             "path": str(docx_path),
             "type": "docx",
-            "text": proc.stdout.strip() if proc.returncode == 0 else "",
+            "text": proc.stdout.strip(),
         }
 
 
@@ -150,19 +161,41 @@ def extract_pptx(pptx_path: Path) -> dict[str, Any]:
 
 
 def extract_document(path: Path, lang: str = "tha+eng") -> dict[str, Any]:
+    if not path.is_file():
+        return {
+            "ok": False,
+            "path": str(path),
+            "type": "missing",
+            "error": f"File not found: {path}",
+        }
     suffix = path.suffix.lower()
-    if suffix == ".pdf":
-        return extract_pdf(path, lang=lang)
-    if suffix == ".docx":
-        return extract_docx(path)
-    if suffix in (".xlsx", ".xlsm"):
-        return extract_xlsx(path)
-    if suffix == ".pptx":
-        return extract_pptx(path)
-    if suffix in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"):
-        text = ocr_image(path, lang=lang)
-        return {"path": str(path), "type": "image_ocr", "text": text}
-    return {"path": str(path), "type": "text", "text": path.read_text(encoding="utf-8", errors="replace")}
+    try:
+        if suffix == ".pdf":
+            res = extract_pdf(path, lang=lang)
+        elif suffix == ".docx":
+            res = extract_docx(path)
+        elif suffix in (".xlsx", ".xlsm"):
+            res = extract_xlsx(path)
+        elif suffix == ".pptx":
+            res = extract_pptx(path)
+        elif suffix in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"):
+            text = ocr_image(path, lang=lang)
+            res = {"path": str(path), "type": "image_ocr", "text": text}
+        else:
+            res = {
+                "path": str(path),
+                "type": "text",
+                "text": path.read_text(encoding="utf-8", errors="replace"),
+            }
+        res.setdefault("ok", True)
+        return res
+    except Exception as exc:
+        return {
+            "ok": False,
+            "path": str(path),
+            "type": suffix.lstrip(".") or "unknown",
+            "error": str(exc),
+        }
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -179,12 +212,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     results = [extract_document(Path(f), lang=args.lang) for f in args.files]
+    overall_ok = len(results) > 0 and all(bool(item.get("ok")) for item in results)
     if args.format == "markdown":
         for item in results:
-            print(f"# {item['path']} ({item['type']})\n\n{item.get('text', '')}\n")
+            if item.get("ok") is False:
+                print(f"# {item['path']} (ERROR)\n\n{item.get('error', '')}\n")
+            else:
+                print(f"# {item['path']} ({item['type']})\n\n{item.get('text', '')}\n")
     else:
-        print(json.dumps({"ok": True, "documents": results}, ensure_ascii=False, indent=2))
-    return 0
+        print(json.dumps({"ok": overall_ok, "documents": results}, ensure_ascii=False, indent=2))
+    return 0 if overall_ok else 1
 
 
 if __name__ == "__main__":

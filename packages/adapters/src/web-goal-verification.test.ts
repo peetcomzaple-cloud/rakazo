@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isLoginFormTask,
   isScreenshotRequest,
   isWebNavigationTask,
   isWindowCloseTask,
@@ -186,5 +187,20 @@ describe("web goal verification", () => {
       browserClickAttempted: false,
     });
     expect(res.ok).toBe(true);
+  });
+
+  it("distinguishes login form requests from generic open/navigate prompts", () => {
+    expect(isLoginFormTask("open the login page")).toBe(true);
+    expect(isLoginFormTask("navigate to sign in form")).toBe(true);
+    expect(isLoginFormTask("เปิดหน้าล็อกอินแล้วรอผมกรอก")).toBe(true);
+
+    expect(isLoginFormTask("Open Multi-Origin Enterprise Portal")).toBe(false);
+    expect(isLoginFormTask("navigate to https://example.com/dashboard")).toBe(false);
+    expect(
+      verifyWebGoal(
+        "rakazo-record-playlist --urls https://localhost:18443/dashboard https://localhost:18443/sso/login",
+        { actionsAttempted: 0, browserClickAttempted: false },
+      ).ok,
+    ).toBe(true);
   });
 });

@@ -84,11 +84,12 @@ export function isClickTask(prompt: string): boolean {
   if (isLoginFormTask(prompt)) {
     return false;
   }
+  const withoutUrls = normalized.replace(/https?:\/\/\S+/gi, "");
   const thaiClick =
-    /(?:กด|คลิก|เลือก|เปิดคลิป|ลงชื่อเข้าใช้|เข้าสู่ระบบ|ล็อกอิน|sign\s*in|log\s*in)/i;
+    /(?:กด|คลิก|เลือก|เปิดคลิป|ลงชื่อเข้าใช้|เข้าสู่ระบบ|ล็อกอิน|\bsign\s*in\b|\blog\s*in\b)/i;
   const engClick =
     /\b(?:click|press|select|sign\s*in|log\s*in|open\s+video)\b/i;
-  return thaiClick.test(normalized) || engClick.test(normalized);
+  return thaiClick.test(withoutUrls) || engClick.test(withoutUrls);
 }
 
 /**
@@ -117,7 +118,7 @@ export function isLoginFormTask(prompt: string): boolean {
   const thaiLoginForm =
     /(?:เปิดหน้ารอกรอก|เปิดหน้า(?:ล็อกอิน|เข้าสู่ระบบ|ลงชื่อเข้าใช้|sign\s*in|login)|ไปหน้า(?:ล็อกอิน|เข้าสู่ระบบ|ลงชื่อเข้าใช้|login|signin)|เข้าสู่ระบบ(?:ที่|\s*https?:)|ล็อกอิน(?:ที่|\s*https?:)|รอกรอก(?:เมล|รหัส|username|password)|รอ(?:ผม|ฉัน|เรา)?กรอก|เปิดหน้าไว้.*กรอกเอง|เปิดหน้า\s*(?:sign\s*in|login))/i;
   const engLoginForm =
-    /\b(?:open|go\s+to|navigate\s+to|log\s*in\s+(?:to|at)|sign\s*in\s+(?:to|at))\s+(?:the\s+)?(?:login|signin|sign-in)?\s*(?:page|form|https?:|http:)?\b/i;
+    /\b(?:(?:open|go\s+to|navigate\s+to)\s+(?:the\s+)?(?:login|sign\s*in|sign-in)\s*(?:page|form)?|(?:log\s*in|sign\s*in)\s+(?:to|at)\b)/i;
   return thaiLoginForm.test(normalized) || engLoginForm.test(normalized);
 }
 

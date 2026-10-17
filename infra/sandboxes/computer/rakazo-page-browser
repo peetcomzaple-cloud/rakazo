@@ -842,10 +842,12 @@ def eval_json(client: CdpClient, session_id: str, expression: str) -> Any:
     )
     if result.get("exceptionDetails"):
         details = result["exceptionDetails"]
+        raw_text = str(details.get("text") or "").strip()
+        desc = str((details.get("exception") or {}).get("description") or "").strip()
         text = (
-            details.get("text")
-            or (details.get("exception") or {}).get("description")
-            or "evaluate failed"
+            desc
+            if (not raw_text or raw_text.lower().startswith("uncaught")) and desc
+            else (raw_text or desc or "evaluate failed")
         )
         raise RuntimeError(str(text))
     return (result.get("result") or {}).get("value")
@@ -1941,6 +1943,14 @@ def solve_challenge(
 def flush_and_persist_state(client: CdpClient, session_id: str | None = None) -> None:
     if session_id:
         try:
+            if getattr(client, "_sock", None) is not None:
+                time.sleep(0.25)
+                client.call(
+                    "Runtime.evaluate",
+                    {"expression": "1", "returnByValue": True},
+                    session_id=session_id,
+                    timeout_s=2.0,
+                )
             materialize_api_entries(client, session_id)
         except Exception:
             pass

@@ -4018,27 +4018,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
           select: { kind: true, request: true },
         });
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
-        const browserRecovery = new BrowserRecovery(
-          pageBrowserAllowed
-            ? await deps.prisma.externalEffect.findMany({
-                where: {
-                  runId,
-                  spaceId: run.spaceId,
-                  status: "completed",
-                  kind: {
-                    in: [
-                      "browser_navigate",
-                      "browser_act",
-                      "browser_clear_origin_storage",
-                      "computer_act",
-                    ],
-                  },
+        const completedBrowserEffects = pageBrowserAllowed
+          ? await deps.prisma.externalEffect.findMany({
+              where: {
+                runId,
+                spaceId: run.spaceId,
+                status: "completed",
+                kind: {
+                  in: [
+                    "browser_navigate",
+                    "browser_act",
+                    "browser_clear_origin_storage",
+                    "computer_act",
+                  ],
                 },
-                orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-                select: { kind: true, result: true },
-              })
-            : [],
-        );
+              },
+              orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+              select: { kind: true, request: true, result: true },
+            })
+          : [];
+        const browserRecovery = new BrowserRecovery(completedBrowserEffects);
         const verifiedUrls = pageBrowserAllowed
           ? await findVerifiedUrlsForSpace(deps.prisma, run.spaceId)
           : [];
@@ -4235,6 +4234,54 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let lastComputerObservation: Awaited<ReturnType<SandboxProvider["observe"]>> | undefined = undefined;
         let consecutiveWebShellInspections = 0;
         let lastEmittedActivity: string | undefined = undefined;
+        for (const eff of completedBrowserEffects) {
+          const res = (eff.result ?? {}) as Record<string, unknown>;
+          const req = (eff.request ?? {}) as Record<string, unknown>;
+          const resUrl = typeof res.url === "string" && res.url ? res.url : undefined;
+          const resTitle = typeof res.title === "string" ? res.title : undefined;
+          const isErr = res.ok === false || typeof res.error === "string";
+          if (eff.kind === "browser_navigate") {
+            webActionsCount++;
+            webNavigationsCount++;
+            if (!isErr) {
+              lastWebActionOk = true;
+              if (!initialWebUrl && resUrl) initialWebUrl = resUrl;
+              if (currentWebUrl && resUrl && currentWebUrl !== resUrl) webDomStateChanged = true;
+              if (resUrl) currentWebUrl = resUrl;
+              if (resTitle !== undefined) currentWebTitle = resTitle;
+            }
+          } else if (eff.kind === "browser_act") {
+            webActionsCount++;
+            const reqActions = Array.isArray(req.actions) ? (req.actions as Array<Record<string, unknown>>) : [];
+            if (reqActions.some((a) => a?.kind === "click")) {
+              browserClickAttempted = true;
+            }
+            if (!isErr) {
+              lastWebActionOk = true;
+              lastWebActionVerified = true;
+              if (!initialWebUrl && resUrl) initialWebUrl = resUrl;
+              if (currentWebUrl && resUrl && currentWebUrl !== resUrl) webDomStateChanged = true;
+              if (resUrl) currentWebUrl = resUrl;
+              if (resTitle !== undefined) currentWebTitle = resTitle;
+              if ((typeof res.completed === "number" && res.completed > 0) || res.stateChanged === true) {
+                webDomStateChanged = true;
+              }
+            }
+          } else if (eff.kind === "browser_clear_origin_storage") {
+            webActionsCount++;
+            if (!isErr) {
+              lastWebActionOk = true;
+              lastWebActionVerified = true;
+            }
+          } else if (eff.kind === "computer_act") {
+            webActionsCount++;
+            desktopClickAttempted = true;
+            if (!isErr) {
+              lastWebActionOk = true;
+              webScreenChanged = true;
+            }
+          }
+        }
 
         if (isScreenshotRequest(task.prompt) && publishScreen && graphical) {
           try {
@@ -6056,6 +6103,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         runId: run.id,
                         name: step.secret,
                         field: step.field,
+                        currentOrigin: currentWebUrl,
                       });
                       if ("error" in resolved) return resolved;
                       registerRunSecrets(resolved.redactions);
@@ -6175,7 +6223,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         name.includes("user"))
                     );
                   });
-                  loginFormVisible = hasPasswordField || (hasUserOrEmailField && hasPasswordField);
+                  if (hasPasswordField || (hasUserOrEmailField && hasPasswordField)) {
+                    loginFormVisible = true;
+                  }
                 }
               } else if (name === "browser_clear_origin_storage") {
                 webActionsCount++;
@@ -6322,7 +6372,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                           name.includes("user"))
                       );
                     });
-                    loginFormVisible = hasPasswordField || (hasUserOrEmailField && hasPasswordField);
+                    if (hasPasswordField || (hasUserOrEmailField && hasPasswordField)) {
+                      loginFormVisible = true;
+                    }
                   }
                 }
               }

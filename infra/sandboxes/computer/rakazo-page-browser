@@ -1301,28 +1301,46 @@ def hash_file_bounded(file_path: str, max_bytes: int = MAX_DOWNLOAD_HASH_BYTES) 
     return total_read, digest.hexdigest(), None
 
 
-def resolve_download_path(target_dir: str, suggested_filename: str, reported_path: str) -> str:
-    if reported_path and os.path.isfile(reported_path):
-        return reported_path
-    if not suggested_filename:
-        return reported_path
-    direct = os.path.join(target_dir, suggested_filename)
-    if os.path.isfile(direct):
-        return direct
-    stem, ext = os.path.splitext(suggested_filename)
-    if os.path.isdir(target_dir):
-        try:
-            candidates = [
-                os.path.join(target_dir, name)
-                for name in os.listdir(target_dir)
-                if name.startswith(stem) and name.endswith(ext)
-            ]
-            files = [p for p in candidates if os.path.isfile(p)]
-            if files:
-                return max(files, key=os.path.getmtime)
-        except OSError:
-            pass
-    return reported_path
+def _is_within_directory(target_dir: str, candidate_path: str) -> bool:
+    try:
+        real_dir = os.path.realpath(target_dir)
+        real_candidate = os.path.realpath(candidate_path)
+        return (
+            real_candidate != real_dir
+            and os.path.commonpath([real_dir, real_candidate]) == real_dir
+        )
+    except (ValueError, OSError):
+        return False
+
+
+def resolve_download_path(
+    target_dir: str,
+    guid: str,
+    reported_path: str,
+    *,
+    enforce_dir: bool = False,
+) -> str | None:
+    candidate = (reported_path or "").strip()
+    if candidate:
+        resolved = candidate if os.path.isabs(candidate) or not target_dir else os.path.join(target_dir, candidate)
+        if os.path.isfile(resolved):
+            if enforce_dir and target_dir and os.path.isdir(target_dir):
+                if not _is_within_directory(target_dir, resolved):
+                    return None
+            return resolved
+        return None
+    clean_guid = (guid or "").strip()
+    if (
+        clean_guid
+        and "/" not in clean_guid
+        and "\\" not in clean_guid
+        and clean_guid not in (".", "..")
+        and target_dir
+    ):
+        guid_path = os.path.join(target_dir, clean_guid)
+        if os.path.isfile(guid_path) and _is_within_directory(target_dir, guid_path):
+            return guid_path
+    return None
 
 
 def collect_download_receipts(
@@ -1330,7 +1348,9 @@ def collect_download_receipts(
     download_dir: str | None = None,
     max_hash_bytes: int = MAX_DOWNLOAD_HASH_BYTES,
 ) -> list[dict[str, Any]]:
-    target_dir = download_dir or os.environ.get("RAKAZO_DOWNLOAD_DIR") or os.path.expanduser("~/Downloads")
+    explicit_dir = download_dir or os.environ.get("RAKAZO_DOWNLOAD_DIR")
+    target_dir = explicit_dir or os.path.expanduser("~/Downloads")
+    enforce_dir = bool(explicit_dir)
     receipts: list[dict[str, Any]] = []
     downloads = getattr(client, "_downloads", None)
     if isinstance(downloads, dict):
@@ -1339,28 +1359,40 @@ def collect_download_receipts(
                 continue
             suggested = str(info.get("suggestedFilename") or "")
             reported_path = str(info.get("filePath") or "")
-            file_path = resolve_download_path(target_dir, suggested, reported_path)
+            state = str(info.get("state") or "unknown")
+            verified_path = (
+                resolve_download_path(
+                    target_dir,
+                    str(guid),
+                    reported_path,
+                    enforce_dir=enforce_dir,
+                )
+                if state == "completed"
+                else None
+            )
             entry: dict[str, Any] = {
                 "guid": guid,
                 "url": str(info.get("url") or ""),
-                "name": suggested or os.path.basename(file_path) or "download",
-                "state": str(info.get("state") or "unknown"),
+                "name": suggested or (os.path.basename(verified_path) if verified_path else "") or "download",
+                "state": state,
+                "pathStatus": "known" if verified_path else "unknown",
             }
             if isinstance(info.get("receivedBytes"), int):
                 entry["receivedBytes"] = int(info["receivedBytes"])
             if isinstance(info.get("totalBytes"), int):
                 entry["totalBytes"] = int(info["totalBytes"])
-            if file_path and os.path.isfile(file_path):
-                entry["path"] = file_path
+            if verified_path:
+                entry["path"] = verified_path
                 try:
-                    size, sha256_hex, skip_reason = hash_file_bounded(file_path, max_bytes=max_hash_bytes)
+                    size, sha256_hex, skip_reason = hash_file_bounded(verified_path, max_bytes=max_hash_bytes)
                     entry["size"] = size
                     if sha256_hex is not None:
                         entry["sha256"] = sha256_hex
                     if skip_reason is not None:
                         entry["hashSkippedReason"] = skip_reason
                 except OSError:
-                    pass
+                    entry.pop("path", None)
+                    entry["pathStatus"] = "unknown"
             receipts.append(entry)
     return receipts
 

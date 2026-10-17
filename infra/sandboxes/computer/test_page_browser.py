@@ -446,6 +446,7 @@ class PageBrowserTest(unittest.TestCase):
                     "guid": "guid-1",
                     "url": "https://files.example.test/report.pdf",
                     "suggestedFilename": "report.pdf",
+                    "filePath": str(small_file),
                     "state": "completed",
                     "receivedBytes": 15,
                     "totalBytes": 15,
@@ -496,12 +497,14 @@ class PageBrowserTest(unittest.TestCase):
                 client, download_dir=tmpdir, max_hash_bytes=1024
             )
             self.assertEqual(len(downloads), 2)
-            # guid-1 resolved collision file report (1).pdf and hashed it
+            # guid-1 has explicit filePath to report (1).pdf and state=completed
             self.assertEqual(downloads[0]["name"], "report.pdf")
+            self.assertEqual(downloads[0]["pathStatus"], "known")
             self.assertTrue(downloads[0]["path"].endswith("report (1).pdf"))
             self.assertEqual(downloads[0]["size"], 15)
             self.assertTrue(bool(downloads[0].get("sha256")))
             # guid-2 exceeded max_hash_bytes=1024, so sha256 is skipped safely
+            self.assertEqual(downloads[1]["pathStatus"], "known")
             self.assertEqual(downloads[1]["size"], 2048)
             self.assertIsNone(downloads[1].get("sha256"))
             self.assertEqual(downloads[1].get("hashSkippedReason"), "exceeds_50mb_limit")
@@ -535,6 +538,106 @@ class PageBrowserTest(unittest.TestCase):
 
             stealth = helper.apply_stealth_evasion(client, "session-1")
             self.assertEqual(stealth, {"ok": True, "stealth": True})
+
+    def test_collect_download_receipts_never_fabricates_identity_from_preexisting_files_or_inprogress_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as other_dir:
+            old_path = Path(tmpdir) / "report.pdf"
+            new_path = Path(tmpdir) / "report (1).pdf"
+            outside_path = Path(other_dir) / "outside.pdf"
+            old_bytes = b"OLD_REPORT_SYNTHETIC_CONTENT"
+            new_bytes = b"NEW_REPORT_SYNTHETIC_CONTENT"
+            old_path.write_bytes(old_bytes)
+            new_path.write_bytes(new_bytes)
+            outside_path.write_bytes(b"OUTSIDE_SECRET")
+
+            # 1) Completed receipt without reported filePath MUST NOT guess report.pdf or report (1).pdf
+            collision_client = Mock()
+            collision_client._downloads = {
+                "new-guid": {
+                    "guid": "new-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "state": "completed",
+                    "receivedBytes": len(new_bytes),
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            collision_receipts = helper.collect_download_receipts(
+                collision_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(collision_receipts), 1)
+            self.assertEqual(collision_receipts[0]["guid"], "new-guid")
+            self.assertEqual(collision_receipts[0]["state"], "completed")
+            self.assertEqual(collision_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", collision_receipts[0])
+            self.assertNotIn("sha256", collision_receipts[0])
+            self.assertNotIn("size", collision_receipts[0])
+
+            # 2) inProgress receipt MUST NOT attach path or sha256 even if old/new files exist or filePath is set
+            inprogress_client = Mock()
+            inprogress_client._downloads = {
+                "in-progress-guid": {
+                    "guid": "in-progress-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "filePath": str(new_path),
+                    "state": "inProgress",
+                    "receivedBytes": 4,
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            inprogress_receipts = helper.collect_download_receipts(
+                inprogress_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(inprogress_receipts), 1)
+            self.assertEqual(inprogress_receipts[0]["guid"], "in-progress-guid")
+            self.assertEqual(inprogress_receipts[0]["state"], "inProgress")
+            self.assertEqual(inprogress_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", inprogress_receipts[0])
+            self.assertNotIn("sha256", inprogress_receipts[0])
+            self.assertNotIn("size", inprogress_receipts[0])
+
+            # 3) Completed receipt with filePath outside download_dir is rejected
+            outside_client = Mock()
+            outside_client._downloads = {
+                "outside-guid": {
+                    "guid": "outside-guid",
+                    "url": "https://files.example.test/outside.pdf",
+                    "suggestedFilename": "outside.pdf",
+                    "filePath": str(outside_path),
+                    "state": "completed",
+                }
+            }
+            outside_receipts = helper.collect_download_receipts(
+                outside_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(outside_receipts), 1)
+            self.assertEqual(outside_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", outside_receipts[0])
+            self.assertNotIn("sha256", outside_receipts[0])
+
+            # 4) Positive control: completed receipt with explicit filePath inside download_dir succeeds
+            explicit_client = Mock()
+            explicit_client._downloads = {
+                "explicit-guid": {
+                    "guid": "explicit-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "filePath": str(new_path),
+                    "state": "completed",
+                    "receivedBytes": len(new_bytes),
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            explicit_receipts = helper.collect_download_receipts(
+                explicit_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(explicit_receipts), 1)
+            self.assertEqual(explicit_receipts[0]["guid"], "explicit-guid")
+            self.assertEqual(explicit_receipts[0]["state"], "completed")
+            self.assertEqual(explicit_receipts[0]["pathStatus"], "known")
+            self.assertEqual(explicit_receipts[0]["path"], str(new_path))
+            self.assertEqual(explicit_receipts[0]["size"], len(new_bytes))
 
     def test_playlist_recorder_uses_supported_page_browser_commands_and_checks_json_results(self):
         recorder_path = Path(__file__).with_name("rakazo-record-playlist")

@@ -354,6 +354,43 @@ class ControlArgvTest(unittest.TestCase):
         )
         self.assertFalse(control.cmdline_matches_profile(f"chromium\0--user-data-dir={PROFILE}\0", None))
 
+    def test_capture_marks_malformed_or_incomplete_wmctrl_inventory_unknown(self):
+        malformed_outputs = [
+            "0x01400003 0\n",
+            "0x01400003 0 4242 chromium.Chromium\n",
+            "0x01400003 0 4242 chromium.Chromium host Example Page\n0x04400010 0\n",
+            "not-a-wid 0 4242 chromium.Chromium host Example Page\n",
+            "0x00000000 0 4242 chromium.Chromium host Example Page\n",
+            "0x01400003 bad-desktop 4242 chromium.Chromium host Example Page\n",
+            "0x01400003 0 bad-pid chromium.Chromium host Example Page\n",
+            (
+                "0x01400003 0 4242 chromium.Chromium host First\n"
+                "0x01400003 0 4242 chromium.Chromium host Duplicate\n"
+            ),
+        ]
+        for bad_stdout in malformed_outputs:
+            with self.subTest(bad_stdout=bad_stdout):
+                def fake_run(argv, _out=bad_stdout, **_kwargs):
+                    if argv == ["wmctrl", "-lxp"]:
+                        return subprocess.CompletedProcess(argv, 0, _out, "")
+                    if argv == ["xdotool", "getdisplaygeometry"]:
+                        return subprocess.CompletedProcess(argv, 0, "1280 800\n", "")
+                    if argv == ["xdotool", "getmouselocation", "--shell"]:
+                        return subprocess.CompletedProcess(argv, 0, "X=10\nY=20\n", "")
+                    if argv == ["xdotool", "getactivewindow"]:
+                        return subprocess.CompletedProcess(argv, 0, "20971523\n", "")
+                    if argv[:2] == ["xdotool", "getwindowname"]:
+                        return subprocess.CompletedProcess(argv, 0, "Example Page\n", "")
+                    return subprocess.CompletedProcess(argv, 0, b"\x89PNG\r\n", b"")
+
+                with (
+                    patch.object(control.subprocess, "run", side_effect=fake_run),
+                    patch.object(control, "native_capture", return_value=None),
+                ):
+                    obs = control.capture(":1", PROFILE)
+                self.assertEqual(obs["windowInventoryStatus"], "unknown")
+                self.assertNotIn("windows", obs)
+
 
 class ScriptTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux /proc process arguments")

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import type { BotSecretDestination } from "@rakazo/contracts";
 import {
@@ -605,89 +605,8 @@ export async function requestWithBotSecret(input: {
   }
 }
 
-export type LoginField = "username" | "password" | "totp";
+export type LoginField = "username" | "password";
 const MIN_REDACTED_USERNAME = 6;
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-export function decodeBase32Secret(input: string): Buffer {
-  let raw = input.trim();
-  if (raw.toLowerCase().startsWith("otpauth://")) {
-    try {
-      const parsed = new URL(raw);
-      const param = parsed.searchParams.get("secret");
-      if (param) raw = param;
-    } catch {
-      /* treat as raw secret */
-    }
-  }
-  const cleaned = raw.toUpperCase().replace(/[\s\-=]+/g, "");
-  if (!cleaned) throw new Error("Empty TOTP secret");
-  let bits = 0;
-  let value = 0;
-  const bytes: number[] = [];
-  for (let i = 0; i < cleaned.length; i++) {
-    const idx = BASE32_ALPHABET.indexOf(cleaned[i]!);
-    if (idx < 0) throw new Error("Invalid Base32 character in TOTP secret");
-    value = (value << 5) | idx;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((value >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  return Buffer.from(bytes);
-}
-
-/**
- * Generates an RFC 6238 TOTP code (6 digits, 30s period, HMAC-SHA1) from a Base32 seed or otpauth:// URI.
- */
-export function generateTotpCode(
-  secretInput: string,
-  timestampMs: number = Date.now(),
-  periodSec = 30,
-  digits = 6,
-): string {
-  const key = decodeBase32Secret(secretInput);
-  const counter = BigInt(Math.floor(timestampMs / 1000 / periodSec));
-  const counterBuf = Buffer.alloc(8);
-  counterBuf.writeBigUInt64BE(counter, 0);
-  const hmac = createHmac("sha1", key).update(counterBuf).digest();
-  const offset = hmac[hmac.length - 1]! & 0x0f;
-  const binary =
-    ((hmac[offset]! & 0x7f) << 24) |
-    ((hmac[offset + 1]! & 0xff) << 16) |
-    ((hmac[offset + 2]! & 0xff) << 8) |
-    (hmac[offset + 3]! & 0xff);
-  const mod = 10 ** digits;
-  return String(binary % mod).padStart(digits, "0");
-}
-
-export function isOriginAllowedForLogin(
-  primaryOrigin: string,
-  currentOrigin: string,
-  allowedOrigins?: string[],
-): string | null {
-  try {
-    const cur = new URL(currentOrigin);
-    if (cur.protocol !== "https:") return null;
-    if (cur.origin === primaryOrigin) return cur.origin;
-    if (Array.isArray(allowedOrigins)) {
-      for (const candidate of allowedOrigins) {
-        try {
-          const parsed = new URL(candidate);
-          if (parsed.protocol === "https:" && parsed.origin === cur.origin) {
-            return cur.origin;
-          }
-        } catch {
-          /* ignore malformed candidate */
-        }
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Resolve one field of a saved website login for a page fill. The caller must pass `origin` to
@@ -729,49 +648,31 @@ export async function resolveLoginFill(input: {
       if (destination.origin !== storedOrigin.origin) {
         return { error: "Website logins can only be filled on an HTTPS origin." };
       }
-      if (input.field !== "username" && input.field !== "password" && input.field !== "totp") {
+      if (input.currentOrigin) {
+        try {
+          const cur = new URL(input.currentOrigin).origin;
+          if (cur !== destination.origin) return { error: "origin mismatch" };
+        } catch {
+          return { error: "origin mismatch" };
+        }
+      }
+      if (input.field !== "username" && input.field !== "password") {
         return { error: "field unavailable" };
       }
       const login = decodeLoginSecret(await input.secretStore.load(row.ciphertext, row.id));
-      let effectiveOrigin = destination.origin;
-      if (input.currentOrigin) {
-        const matched = isOriginAllowedForLogin(
-          destination.origin,
-          input.currentOrigin,
-          login.allowedOrigins,
-        );
-        if (!matched) return { error: "origin mismatch" };
-        effectiveOrigin = matched;
-      }
-      const baseRedactions = [
-        ...new Set(
-          [login.password, encodeURIComponent(login.password)].concat(
-            login.username.length >= MIN_REDACTED_USERNAME
-              ? [login.username, encodeURIComponent(login.username)]
-              : [],
-          ),
-        ),
-      ];
-      if (input.field === "totp") {
-        if (!login.totpSecret) {
-          return { error: "TOTP secret is not configured for this login." };
-        }
-        try {
-          const code = generateTotpCode(login.totpSecret);
-          return {
-            text: code,
-            origin: effectiveOrigin,
-            redactions: [...new Set([...baseRedactions, login.totpSecret, code])],
-          };
-        } catch {
-          return { error: "Invalid TOTP secret configured for this login." };
-        }
-      }
       return {
         text: login[input.field],
-        origin: effectiveOrigin,
+        origin: destination.origin,
         // Redaction is substring replacement, so a short username would mangle unrelated text.
-        redactions: baseRedactions,
+        redactions: [
+          ...new Set(
+            [login.password, encodeURIComponent(login.password)].concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            ),
+          ),
+        ],
       };
     }
   }
@@ -817,53 +718,34 @@ export async function resolveLoginFill(input: {
       if (storedOrigin.protocol !== "https:") {
         return { error: "Website logins can only be filled on an HTTPS origin." };
       }
-      if (input.field !== "username" && input.field !== "password" && input.field !== "totp") {
+      if (input.currentOrigin) {
+        try {
+          const cur = new URL(input.currentOrigin).origin;
+          if (cur !== storedOrigin.origin) return { error: "origin mismatch" };
+        } catch {
+          return { error: "origin mismatch" };
+        }
+      }
+      if (input.field !== "username" && input.field !== "password") {
         return { error: "field unavailable" };
       }
       const plaintext = await input.secretStore.load(secretRow.ciphertext, secretRow.id);
       const login = decodeLoginSecret(plaintext);
-      let effectiveOrigin = storedOrigin.origin;
-      if (input.currentOrigin) {
-        const matched = isOriginAllowedForLogin(
-          storedOrigin.origin,
-          input.currentOrigin,
-          login.allowedOrigins,
-        );
-        if (!matched) return { error: "origin mismatch" };
-        effectiveOrigin = matched;
-      }
-      const baseRedactions = [
-        ...new Set(
-          [login.password, encodeURIComponent(login.password)].concat(
-            login.username.length >= MIN_REDACTED_USERNAME
-              ? [login.username, encodeURIComponent(login.username)]
-              : [],
-          ),
-        ),
-      ];
-      if (input.field === "totp") {
-        if (!login.totpSecret) {
-          return { error: "TOTP secret is not configured for this login." };
-        }
-        try {
-          const code = generateTotpCode(login.totpSecret);
-          return {
-            text: code,
-            origin: effectiveOrigin,
-            redactions: [...new Set([...baseRedactions, login.totpSecret, code])],
-          };
-        } catch {
-          return { error: "Invalid TOTP secret configured for this login." };
-        }
-      }
       return {
         text: login[input.field],
-        origin: effectiveOrigin,
-        redactions: baseRedactions,
+        origin: storedOrigin.origin,
+        redactions: [
+          ...new Set(
+            [login.password, encodeURIComponent(login.password)].concat(
+              login.username.length >= MIN_REDACTED_USERNAME
+                ? [login.username, encodeURIComponent(login.username)]
+                : [],
+            ),
+          ),
+        ],
       };
     }
   }
 
   return { error: "Login is unavailable. Use request_secret to save it first." };
 }
-

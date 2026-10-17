@@ -247,8 +247,6 @@ export type BotSecretDestination = z.infer<typeof BotSecretDestination>;
 export const LoginSecretValue = z.object({
   username: z.string().min(1).max(512),
   password: z.string().min(1).max(4096),
-  totpSecret: z.string().min(1).max(512).optional(),
-  allowedOrigins: z.array(z.string().min(1).max(512)).max(20).optional(),
 });
 export type LoginSecretValue = z.infer<typeof LoginSecretValue>;
 

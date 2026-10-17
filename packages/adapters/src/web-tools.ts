@@ -23,48 +23,18 @@ export async function webSearchFromTool(
   }
 }
 
-const MAX_BATCH_FETCH_URLS = 10;
-
 export async function webFetchFromTool(
   fetchProvider: WebFetchProvider,
   context: AdapterContext,
   args: Record<string, unknown>,
 ) {
-  const maxChars = clampMaxChars(args.maxChars);
-  if (Array.isArray(args.urls)) {
-    const rawUrls = args.urls
-      .map((u) => String(u ?? "").trim())
-      .filter((u) => u.length > 0)
-      .slice(0, MAX_BATCH_FETCH_URLS);
-    if (rawUrls.length === 0) return { error: "urls must contain at least one non-empty URL" };
-    const pages = await Promise.all(
-      rawUrls.map(async (targetUrl) => {
-        try {
-          return await fetchProvider.fetch(
-            {
-              url: targetUrl,
-              maxChars,
-              signal: context.signal,
-            },
-            context,
-          );
-        } catch (error) {
-          return {
-            url: targetUrl,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
-      }),
-    );
-    return { pages };
-  }
   const url = String(args.url ?? "").trim();
   if (!url) return { error: "url is required" };
   try {
     const result = await fetchProvider.fetch(
       {
         url,
-        maxChars,
+        maxChars: clampMaxChars(args.maxChars),
         signal: context.signal,
       },
       context,
@@ -74,4 +44,3 @@ export async function webFetchFromTool(
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }
-

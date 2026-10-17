@@ -327,6 +327,42 @@ class ControlArgvTest(unittest.TestCase):
             },
         )
 
+
+    def test_collect_window_inventory_requires_unknown_for_malformed_output(self):
+        # 1. Wholly malformed output
+        def fake_run_malformed(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, "garbage\n0x02000001 0 \n", "")
+
+        with patch("subprocess.run", side_effect=fake_run_malformed):
+            status, freshness, windows = control.collect_window_inventory({})
+            self.assertEqual(status, "unknown") # Expected to FAIL: currently returns validempty
+
+        # 2. Mixed valid+malformed output
+        def fake_run_mixed(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, "garbage\n0x01400003 0 4242 chromium.Chromium host Example Page\n", "")
+
+        with patch("subprocess.run", side_effect=fake_run_mixed):
+            status, freshness, windows = control.collect_window_inventory({})
+            self.assertEqual(status, "unknown") # Expected to FAIL: currently returns validnonempty
+
+        # 3. Duplicate/Invalid IDs
+        def fake_run_duplicate(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, "0x01400003 0 4242 chromium.Chromium host Example Page\n0x01400003 0 4242 chromium.Chromium host Example Page\n", "")
+
+        with patch("subprocess.run", side_effect=fake_run_duplicate):
+            status, freshness, windows = control.collect_window_inventory({})
+            self.assertEqual(status, "unknown") # Expected to FAIL: currently returns validnonempty
+
+    def test_collect_window_inventory_returns_validempty_for_truly_empty_output(self):
+        # Positive control: purely empty output should return validempty
+        def fake_run_empty(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with patch("subprocess.run", side_effect=fake_run_empty):
+            status, freshness, windows = control.collect_window_inventory({})
+            self.assertEqual(status, "validempty")
+            self.assertEqual(windows, [])
+
     def test_cmdline_matches_profile_parses_nul_argv_and_normalizes_paths(self):
         self.assertTrue(
             control.cmdline_matches_profile(

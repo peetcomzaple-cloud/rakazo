@@ -6045,10 +6045,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ? redactConnectorPayload(await tool(browser, computer, context, args), redactions())
                     : await browserActFromTool(browser, computer, context, args, {
                     redactions,
-                    resolveSecretFill: async (step: {
-                      secret?: string;
-                      field: "username" | "password" | "totp";
-                    }) => {
+                    resolveSecretFill: async (step) => {
                       const resolved = await resolveLoginFill({
                         prisma: deps.prisma,
                         secretStore: deps.secretStore,

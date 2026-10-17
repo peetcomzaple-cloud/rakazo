@@ -1,13 +1,17 @@
 """Offline protocol/error regressions for the live browser helper."""
 import importlib.machinery
 import importlib.util
+import json
 from pathlib import Path
 import struct
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 
 loader = importlib.machinery.SourceFileLoader("page_browser", str(Path(__file__).with_name("rakazo-page-browser")))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -419,60 +423,202 @@ class PageBrowserTest(unittest.TestCase):
             )
 
     def test_harvest_json_and_download_receipts_and_stealth_challenge(self):
-        client = Mock()
-        client._api_responses = {
-            "session-1": [
-                {
-                    "requestId": "req-1",
-                    "url": "https://api.example.test/v1/items",
-                    "status": 200,
-                    "mimeType": "application/json",
-                }
-            ]
-        }
-        client._downloads = {
-            "guid-1": {
-                "guid": "guid-1",
-                "url": "https://files.example.test/report.pdf",
-                "suggestedFilename": "report.pdf",
-                "state": "completed",
-                "receivedBytes": 4096,
-                "totalBytes": 4096,
+        with tempfile.TemporaryDirectory() as tmpdir:
+            small_file = Path(tmpdir) / "report (1).pdf"
+            small_file.write_bytes(b"hello-pdf-bytes")
+            large_file = Path(tmpdir) / "huge.bin"
+            large_file.write_bytes(b"x" * 2048)
+
+            client = Mock()
+            client.context_id = 7
+            client._api_responses = {
+                "session-1": [
+                    {
+                        "requestId": "req-1",
+                        "url": "https://api.example.test/v1/items",
+                        "status": 200,
+                        "mimeType": "application/json",
+                    }
+                ]
             }
-        }
+            client._downloads = {
+                "guid-1": {
+                    "guid": "guid-1",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "state": "completed",
+                    "receivedBytes": 15,
+                    "totalBytes": 15,
+                },
+                "guid-2": {
+                    "guid": "guid-2",
+                    "url": "https://files.example.test/huge.bin",
+                    "suggestedFilename": "huge.bin",
+                    "filePath": str(large_file),
+                    "state": "completed",
+                    "receivedBytes": 2048,
+                    "totalBytes": 2048,
+                },
+            }
 
-        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
-            if method == "Network.getResponseBody":
-                return {"body": '{"items":[{"id":1,"name":"Alpha"}]}', "base64Encoded": False}
-            if method == "Runtime.evaluate":
-                return {"result": {"value": True}}
-            return {}
+            challenge_state = {
+                "hasToken": False,
+                "hasChallengeDom": True,
+                "title": "Just a moment...",
+                "bodySnippet": "Verify you are human",
+                "url": "https://example.test/protected",
+            }
 
-        client.call.side_effect = fake_call
+            def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
+                if method == "Network.getResponseBody":
+                    return {"body": '{"items":[{"id":1,"name":"Alpha"}]}', "base64Encoded": False}
+                if method == "Page.getFrameTree":
+                    return {"frameTree": {"frame": {"id": "frame-1"}}}
+                if method == "Page.createIsolatedWorld":
+                    return {"executionContextId": 7}
+                if method == "Runtime.evaluate":
+                    expr = (params or {}).get("expression", "")
+                    if "hasChallengeDom" in expr:
+                        return {"result": {"value": dict(challenge_state)}}
+                    return {"result": {"value": True}}
+                return {}
 
-        harvested = helper.harvest_json_apis(
-            client, "session-1", {"urlFilter": "api.example.test", "maxItems": 5}
-        )
-        self.assertTrue(harvested["ok"])
-        self.assertEqual(len(harvested["apis"]), 1)
-        self.assertEqual(harvested["apis"][0]["data"]["items"][0]["name"], "Alpha")
+            client.call.side_effect = fake_call
 
-        downloads = helper.collect_download_receipts(client)
-        self.assertEqual(len(downloads), 1)
-        self.assertEqual(downloads[0]["name"], "report.pdf")
-        self.assertEqual(downloads[0]["state"], "completed")
+            harvested = helper.harvest_json_apis(
+                client, "session-1", {"urlFilter": "api.example.test", "maxItems": 5}
+            )
+            self.assertTrue(harvested["ok"])
+            self.assertEqual(len(harvested["apis"]), 1)
+            self.assertEqual(harvested["apis"][0]["data"]["items"][0]["name"], "Alpha")
 
-        pts = helper.bezier_pointer_points(10.0, 20.0, 210.0, 320.0, steps=12)
-        self.assertEqual(len(pts), 12)
-        self.assertEqual(pts[-1], (210, 320))
+            downloads = helper.collect_download_receipts(
+                client, download_dir=tmpdir, max_hash_bytes=1024
+            )
+            self.assertEqual(len(downloads), 2)
+            # guid-1 resolved collision file report (1).pdf and hashed it
+            self.assertEqual(downloads[0]["name"], "report.pdf")
+            self.assertTrue(downloads[0]["path"].endswith("report (1).pdf"))
+            self.assertEqual(downloads[0]["size"], 15)
+            self.assertTrue(bool(downloads[0].get("sha256")))
+            # guid-2 exceeded max_hash_bytes=1024, so sha256 is skipped safely
+            self.assertEqual(downloads[1]["size"], 2048)
+            self.assertIsNone(downloads[1].get("sha256"))
+            self.assertEqual(downloads[1].get("hashSkippedReason"), "exceeds_50mb_limit")
 
-        solved = helper.solve_challenge(client, "session-1", {"x": 210, "y": 320})
-        self.assertTrue(solved["ok"])
-        self.assertTrue(solved["solved"])
-        self.assertEqual(solved["clickedAt"], {"x": 210, "y": 320})
+            pts = helper.bezier_pointer_points(10.0, 20.0, 210.0, 320.0, steps=12)
+            self.assertEqual(len(pts), 12)
+            self.assertEqual(pts[-1], (210, 320))
 
-        stealth = helper.apply_stealth_evasion(client, "session-1")
-        self.assertEqual(stealth, {"ok": True, "stealth": True})
+            # 1) When challenge remains active after click, solve_challenge MUST NOT claim solved=True
+            unsolved = helper.solve_challenge(
+                client, "session-1", {"x": 210, "y": 320, "settleMs": 0}
+            )
+            self.assertFalse(unsolved["ok"])
+            self.assertTrue(unsolved["dispatched"])
+            self.assertFalse(unsolved["solved"])
+            self.assertEqual(unsolved["status"], "still_challenged")
+            self.assertTrue(unsolved["requiresTakeover"])
+            self.assertEqual(unsolved["fallback"], "request_takeover")
+
+            # 2) When challenge DOM clears or token is populated, solve_challenge reports verified
+            challenge_state["hasToken"] = True
+            challenge_state["hasChallengeDom"] = False
+            solved = helper.solve_challenge(
+                client, "session-1", {"x": 210, "y": 320, "settleMs": 0}
+            )
+            self.assertTrue(solved["ok"])
+            self.assertTrue(solved["dispatched"])
+            self.assertTrue(solved["solved"])
+            self.assertEqual(solved["status"], "verified")
+            self.assertEqual(solved["clickedAt"], {"x": 210, "y": 320})
+
+            stealth = helper.apply_stealth_evasion(client, "session-1")
+            self.assertEqual(stealth, {"ok": True, "stealth": True})
+
+    def test_playlist_recorder_uses_supported_page_browser_commands_and_checks_json_results(self):
+        recorder_path = Path(__file__).with_name("rakazo-record-playlist")
+        loader = SourceFileLoader("rakazo_record_playlist", str(recorder_path))
+        spec = spec_from_loader(loader.name, loader)
+        assert spec is not None and spec.loader is not None
+        recorder = module_from_spec(spec)
+        spec.loader.exec_module(recorder)
+
+        seen_cmds: list[list[str]] = []
+
+        def fake_run(cmd, capture_output=True, text=True):
+            seen_cmds.append(list(cmd))
+            if cmd[1] == "navigate":
+                payload = json.loads(cmd[2])
+                if "fail" in payload["url"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout='{"ok": false, "error": "HTTP 500 error"}\n', stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps({"ok": True, "url": payload["url"], "title": "Clip 1"}) + "\n",
+                    stderr="",
+                )
+            if cmd[1] == "click_selector":
+                payload = json.loads(cmd[2])
+                if payload["selector"] == "#missing":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        stdout='{"ok": false, "clicked": false, "error": "No element"}\n',
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout='{"ok": true, "clicked": true}\n', stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="unknown command")
+
+        with patch.object(recorder.shutil, "which", return_value="/usr/local/bin/rakazo-page-browser"), \
+             patch.object(recorder.subprocess, "run", side_effect=fake_run):
+            ok_nav = recorder.navigate_url("https://example.test/clip1")
+            self.assertTrue(ok_nav["ok"])
+            self.assertEqual(seen_cmds[-1][1], "navigate")
+
+            bad_nav = recorder.navigate_url("https://example.test/fail")
+            self.assertFalse(bad_nav["ok"])
+            self.assertIn("HTTP 500", bad_nav["error"])
+
+            ok_adv = recorder.advance_next_clip(".next-button")
+            self.assertTrue(ok_adv["ok"])
+            self.assertEqual(seen_cmds[-1][1], "click_selector")
+
+            bad_adv = recorder.advance_next_clip("#missing")
+            self.assertFalse(bad_adv["ok"])
+
+    def test_transcribe_and_doc_extract_cli_contracts(self):
+        transcribe_path = Path(__file__).with_name("rakazo-transcribe")
+        t_loader = SourceFileLoader("rakazo_transcribe", str(transcribe_path))
+        t_spec = spec_from_loader(t_loader.name, t_loader)
+        assert t_spec is not None and t_spec.loader is not None
+        transcribe = module_from_spec(t_spec)
+        t_spec.loader.exec_module(transcribe)
+
+        self.assertEqual(transcribe.format_srt_timestamp(0.0), "00:00:00,000")
+        self.assertEqual(transcribe.format_srt_timestamp(65.432), "00:01:05,432")
+        self.assertEqual(transcribe.resolve_provider_and_key("", ""), ("groq", ""))
+        self.assertEqual(transcribe.resolve_provider_and_key("openai", "sk-test"), ("openai", "sk-test"))
+        # Missing API key returns exit code 2 with structured error
+        self.assertEqual(transcribe.main(["dummy.mp3", "--provider", "groq", "--api-key", ""]), 2)
+
+        doc_path = Path(__file__).with_name("rakazo-doc-extract")
+        d_loader = SourceFileLoader("rakazo_doc_extract", str(doc_path))
+        d_spec = spec_from_loader(d_loader.name, d_loader)
+        assert d_spec is not None and d_spec.loader is not None
+        doc_extract = module_from_spec(d_spec)
+        d_spec.loader.exec_module(doc_extract)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample_txt = Path(tmpdir) / "notes.txt"
+            sample_txt.write_text("สวัสดีครับ Rakazo Document Test", encoding="utf-8")
+            extracted = doc_extract.extract_document(sample_txt)
+            self.assertEqual(extracted["type"], "text")
+            self.assertIn("สวัสดีครับ", extracted["text"])
 
 
 if __name__ == "__main__":

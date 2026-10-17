@@ -438,6 +438,14 @@ def attach_page(client: CdpClient) -> str:
     else:
         raise RuntimeError("No unambiguous visible browser tab. Use desktop tools to select a tab.")
     ensure_world(client, selected)
+    download_dir = os.environ.get("RAKAZO_DOWNLOAD_DIR") or os.path.expanduser("~/Downloads")
+    try:
+        client.call(
+            "Browser.setDownloadBehavior",
+            {"behavior": "allow", "downloadPath": download_dir, "eventsEnabled": True},
+        )
+    except Exception:
+        pass
     return selected
 
 
@@ -1260,44 +1268,150 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
             completed += 1
             uncertain = False
         snap = snapshot(client, session_id)
-        return {**snap, "completed": completed}
+        downloads = collect_download_receipts(client)
+        return {
+            **snap,
+            "completed": completed,
+            **({"downloads": downloads} if downloads else {}),
+        }
     except Exception as exc:
         return {"ok": False, "completed": completed, "uncertain": uncertain,
                 "error": str(exc), "fallback": "computer_act"}
 
 
+MAX_DOWNLOAD_HASH_BYTES = 50 * 1024 * 1024
+HASH_CHUNK_BYTES = 65_536
+
+
+def hash_file_bounded(file_path: str, max_bytes: int = MAX_DOWNLOAD_HASH_BYTES) -> tuple[int, str | None, str | None]:
+    size = os.path.getsize(file_path)
+    if size > max_bytes:
+        return size, None, "exceeds_50mb_limit"
+    digest = hashlib.sha256()
+    total_read = 0
+    with open(file_path, "rb") as fh:
+        while True:
+            chunk = fh.read(HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            total_read += len(chunk)
+            if total_read > max_bytes:
+                return total_read, None, "exceeds_50mb_limit"
+            digest.update(chunk)
+    return total_read, digest.hexdigest(), None
+
+
+def resolve_download_path(target_dir: str, suggested_filename: str, reported_path: str) -> str:
+    if reported_path and os.path.isfile(reported_path):
+        return reported_path
+    if not suggested_filename:
+        return reported_path
+    direct = os.path.join(target_dir, suggested_filename)
+    if os.path.isfile(direct):
+        return direct
+    stem, ext = os.path.splitext(suggested_filename)
+    if os.path.isdir(target_dir):
+        try:
+            candidates = [
+                os.path.join(target_dir, name)
+                for name in os.listdir(target_dir)
+                if name.startswith(stem) and name.endswith(ext)
+            ]
+            files = [p for p in candidates if os.path.isfile(p)]
+            if files:
+                return max(files, key=os.path.getmtime)
+        except OSError:
+            pass
+    return reported_path
+
+
 def collect_download_receipts(
     client: Any,
     download_dir: str | None = None,
+    max_hash_bytes: int = MAX_DOWNLOAD_HASH_BYTES,
 ) -> list[dict[str, Any]]:
-    target_dir = download_dir or os.path.expanduser("~/Downloads")
+    target_dir = download_dir or os.environ.get("RAKAZO_DOWNLOAD_DIR") or os.path.expanduser("~/Downloads")
     receipts: list[dict[str, Any]] = []
     downloads = getattr(client, "_downloads", None)
     if isinstance(downloads, dict):
         for guid, info in downloads.items():
             if not isinstance(info, dict):
                 continue
-            file_path = str(info.get("filePath") or "")
-            if not file_path and info.get("suggestedFilename"):
-                candidate = os.path.join(target_dir, str(info["suggestedFilename"]))
-                if os.path.isfile(candidate):
-                    file_path = candidate
+            suggested = str(info.get("suggestedFilename") or "")
+            reported_path = str(info.get("filePath") or "")
+            file_path = resolve_download_path(target_dir, suggested, reported_path)
             entry: dict[str, Any] = {
                 "guid": guid,
                 "url": str(info.get("url") or ""),
-                "name": str(info.get("suggestedFilename") or os.path.basename(file_path) or "download"),
+                "name": suggested or os.path.basename(file_path) or "download",
                 "state": str(info.get("state") or "unknown"),
             }
+            if isinstance(info.get("receivedBytes"), int):
+                entry["receivedBytes"] = int(info["receivedBytes"])
+            if isinstance(info.get("totalBytes"), int):
+                entry["totalBytes"] = int(info["totalBytes"])
             if file_path and os.path.isfile(file_path):
+                entry["path"] = file_path
                 try:
-                    data = Path(file_path).read_bytes()
-                    entry["path"] = file_path
-                    entry["size"] = len(data)
-                    entry["sha256"] = hashlib.sha256(data).hexdigest()
+                    size, sha256_hex, skip_reason = hash_file_bounded(file_path, max_bytes=max_hash_bytes)
+                    entry["size"] = size
+                    if sha256_hex is not None:
+                        entry["sha256"] = sha256_hex
+                    if skip_reason is not None:
+                        entry["hashSkippedReason"] = skip_reason
                 except OSError:
-                    entry["path"] = file_path
+                    pass
             receipts.append(entry)
     return receipts
+
+
+def click_selector(
+    client: CdpClient,
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    selector = str(args.get("selector") or "").strip()
+    if not selector:
+        return {"ok": False, "clicked": False, "error": "selector is required"}
+    ensure_helpers(client, session_id)
+    try:
+        res = eval_json(
+            client,
+            session_id,
+            f"""(() => {{
+                const sel = {json.dumps(selector)};
+                let el = null;
+                if (/^e\\d+$/.test(sel) && window.__rakazoPageBrowser) {{
+                    el = window.__rakazoPageBrowser.resolve(sel);
+                }}
+                if (!el) {{
+                    el = document.querySelector(sel);
+                }}
+                if (!el) {{
+                    return {{ ok: false, clicked: false, error: `No element matches selector: ${{sel}}` }};
+                }}
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) {{
+                    return {{ ok: false, clicked: false, error: `Element has no visible box: ${{sel}}` }};
+                }}
+                if (el.disabled || el.getAttribute("aria-disabled") === "true") {{
+                    return {{ ok: false, clicked: false, error: `Element is disabled: ${{sel}}` }};
+                }}
+                el.focus();
+                el.click();
+                return {{
+                    ok: true,
+                    clicked: true,
+                    url: location.href,
+                    title: (document.title || "").slice(0, 200),
+                }};
+            }})()""",
+        )
+        if isinstance(res, dict):
+            return res
+        return {"ok": False, "clicked": False, "error": "click_selector returned non-object"}
+    except Exception as exc:
+        return {"ok": False, "clicked": False, "error": str(exc)}
 
 
 def harvest_json_apis(
@@ -1412,6 +1526,34 @@ def apply_stealth_evasion(client: CdpClient, session_id: str) -> dict[str, Any]:
     return {"ok": True, "stealth": True}
 
 
+def observe_challenge_state(client: CdpClient, session_id: str) -> dict[str, Any] | None:
+    try:
+        ensure_world(client, session_id)
+        info = eval_json(
+            client,
+            session_id,
+            r"""(() => {
+              const tokenInputs = Array.from(
+                document.querySelectorAll(
+                  '[name="cf-turnstile-response"], [name="g-recaptcha-response"], [name="h-captcha-response"]'
+                )
+              );
+              const hasToken = tokenInputs.some((el) => typeof el.value === "string" && el.value.trim().length > 0);
+              const hasChallengeDom = Boolean(
+                document.querySelector(
+                  '#challenge-running, #challenge-form, #cf-challenge-running, iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-turnstile, .g-recaptcha, .h-captcha'
+                )
+              );
+              const title = (document.title || "").slice(0, 200);
+              const bodySnippet = (document.body && document.body.innerText ? document.body.innerText : "").slice(0, 1000);
+              return { hasToken, hasChallengeDom, title, bodySnippet, url: location.href };
+            })()""",
+        )
+        return info if isinstance(info, dict) else None
+    except Exception:
+        return None
+
+
 def solve_challenge(
     client: CdpClient,
     session_id: str,
@@ -1434,7 +1576,15 @@ def solve_challenge(
             })()""",
         )
         if not isinstance(box, dict):
-            return {"ok": False, "solved": False, "error": "No challenge widget located on page"}
+            return {
+                "ok": False,
+                "dispatched": False,
+                "status": "no_widget",
+                "solved": False,
+                "requiresTakeover": True,
+                "fallback": "request_takeover",
+                "error": "No challenge widget located on page",
+            }
         target_x = int(box["x"])
         target_y = int(box["y"])
     start_x = int(args.get("startX") or max(10, int(target_x) - 140))
@@ -1457,11 +1607,54 @@ def solve_challenge(
         {"type": "mouseReleased", "x": fx, "y": fy, "button": "left", "clickCount": 1},
         session_id=session_id,
     )
+    settle_ms = int(args.get("settleMs", 250))
+    if settle_ms > 0:
+        time.sleep(min(settle_ms, 5000) / 1000.0)
+    post = observe_challenge_state(client, session_id)
+    if isinstance(post, dict):
+        still_challenged = (
+            not bool(post.get("hasToken"))
+            and (
+                bool(post.get("hasChallengeDom"))
+                or detect_challenge_page(
+                    str(post.get("title") or ""),
+                    str(post.get("bodySnippet") or ""),
+                    bool(post.get("hasChallengeDom")),
+                    None,
+                )
+                is not None
+            )
+        )
+        if bool(post.get("hasToken")) or not still_challenged:
+            return {
+                "ok": True,
+                "dispatched": True,
+                "status": "verified",
+                "solved": True,
+                "clickedAt": {"x": fx, "y": fy},
+                "trajectoryPoints": len(trajectory),
+            }
+        return {
+            "ok": False,
+            "dispatched": True,
+            "status": "still_challenged",
+            "solved": False,
+            "requiresTakeover": True,
+            "fallback": "request_takeover",
+            "clickedAt": {"x": fx, "y": fy},
+            "trajectoryPoints": len(trajectory),
+            "error": "Challenge remains active after click; request user takeover.",
+        }
     return {
-        "ok": True,
-        "solved": True,
+        "ok": False,
+        "dispatched": True,
+        "status": "unknown",
+        "solved": False,
+        "requiresTakeover": True,
+        "fallback": "request_takeover",
         "clickedAt": {"x": fx, "y": fy},
         "trajectoryPoints": len(trajectory),
+        "error": "Challenge state could not be verified after click; request user takeover.",
     }
 
 
@@ -1524,6 +1717,13 @@ def run(argv: list[str]) -> int:
                 if not isinstance(actions, list):
                     raise RuntimeError("actions must be an array")
                 result = act(client, session_id, actions)
+            elif command == "click_selector":
+                result = click_selector(client, session_id, args)
+            elif command == "downloads":
+                result = {
+                    "ok": True,
+                    "downloads": collect_download_receipts(client, args.get("downloadDir")),
+                }
             elif command == "clear_origin_storage":
                 result = clear_origin_storage(client, session_id, args)
             elif command == "harvest_json":

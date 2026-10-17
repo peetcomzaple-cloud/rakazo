@@ -171,6 +171,9 @@ export class ComputerBrowserProvider implements BrowserProvider {
       };
     }
     const elements = Array.isArray(live.elements) ? live.elements : undefined;
+    const downloads = Array.isArray((live as { downloads?: unknown[] }).downloads)
+      ? (live as { downloads?: unknown[] }).downloads
+      : undefined;
     return {
       ok: true,
       completed: typeof live.completed === "number" ? live.completed : request.actions.length,
@@ -178,6 +181,7 @@ export class ComputerBrowserProvider implements BrowserProvider {
       title: typeof live.title === "string" ? live.title : "",
       tree: typeof live.tree === "string" ? live.tree : elements ? formatTree(elements) : undefined,
       elements,
+      ...(downloads ? { downloads } : {}),
     };
   }
 

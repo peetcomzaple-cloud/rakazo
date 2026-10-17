@@ -124,25 +124,72 @@ describe("web tool apply with fake provider", () => {
     });
   });
 
-  it("fetches multiple URLs concurrently via batch urls parameter", async () => {
-    const fake = new FakeWebProvider();
-    fake.fetchResult = {
-      url: "https://example.test/page",
-      title: "Batch Page",
-      text: "Parallel content",
-      truncated: false,
-    };
-    const res = await webFetchFromTool(fake, ctx, {
-      urls: ["https://example.test/1", "https://example.test/2", "https://example.test/3"],
-      maxChars: 500,
+  it("fetches multiple URLs concurrently via batch urls parameter, isolates mixed failures, enforces output cap, and honours abort", async () => {
+    const { builtinAgentTools } = await import("./builtin-tools.js");
+    const webFetchTool = builtinAgentTools.find((t) => t.name === "web_fetch");
+    expect(webFetchTool?.inputSchema).toMatchObject({
+      properties: {
+        url: { type: "string" },
+        urls: { type: "array", maxItems: 10 },
+      },
+      anyOf: [{ required: ["url"] }, { required: ["urls"] }],
     });
-    expect(res).toMatchObject({
+
+    const browserActTool = builtinAgentTools.find((t) => t.name === "browser_act");
+    const actionProps = (
+      browserActTool?.inputSchema as {
+        properties?: { actions?: { items?: { properties?: { field?: { enum?: string[] } } } } };
+      }
+    )?.properties?.actions?.items?.properties?.field?.enum;
+    expect(actionProps).toEqual(["username", "password", "totp"]);
+
+    const seenMaxChars: number[] = [];
+    const mixedProvider = {
+      describe: () => ({ id: "mixed", contractVersion: "1", adapterVersion: "1", capabilities: {} }),
+      fetch: async (req: { url: string; maxChars?: number }) => {
+        seenMaxChars.push(req.maxChars ?? 0);
+        if (req.url.includes("fail")) {
+          throw new Error("upstream 502");
+        }
+        return {
+          url: req.url,
+          title: "Batch Page",
+          text: "Parallel content",
+          truncated: false,
+        };
+      },
+    };
+    const res = await webFetchFromTool(mixedProvider as never, ctx, {
+      urls: [
+        "https://example.test/1",
+        "https://example.test/fail",
+        "https://example.test/3",
+        "https://example.test/4",
+        "https://example.test/5",
+      ],
+      maxChars: 50_000,
+    });
+    expect(res).toEqual({
       pages: [
-        { url: "https://example.test/1", title: "Batch Page", text: "Parallel content" },
-        { url: "https://example.test/2", title: "Batch Page", text: "Parallel content" },
-        { url: "https://example.test/3", title: "Batch Page", text: "Parallel content" },
+        { url: "https://example.test/1", title: "Batch Page", text: "Parallel content", truncated: false },
+        { url: "https://example.test/fail", error: "upstream 502" },
+        { url: "https://example.test/3", title: "Batch Page", text: "Parallel content", truncated: false },
+        { url: "https://example.test/4", title: "Batch Page", text: "Parallel content", truncated: false },
+        { url: "https://example.test/5", title: "Batch Page", text: "Parallel content", truncated: false },
       ],
     });
+    // 50,000 total budget across 5 URLs clamps per-page maxChars to 10,000
+    expect(seenMaxChars.every((c) => c === 10_000)).toBe(true);
+
+    const abortController = new AbortController();
+    abortController.abort(new Error("user cancelled"));
+    await expect(
+      webFetchFromTool(
+        mixedProvider as never,
+        { ...ctx, signal: abortController.signal },
+        { urls: ["https://example.test/1"] },
+      ),
+    ).rejects.toThrow(/user cancelled/);
   });
 });
 

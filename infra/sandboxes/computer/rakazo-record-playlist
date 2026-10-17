@@ -34,6 +34,52 @@ def load_status(status_path: Path) -> dict[str, Any]:
         return {}
 
 
+def parse_page_browser_output(proc: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return {
+            "ok": False,
+            "error": (proc.stderr or "").strip() or f"rakazo-page-browser exited with {proc.returncode}",
+        }
+    try:
+        parsed = json.loads(stdout.splitlines()[-1])
+        if isinstance(parsed, dict):
+            return parsed
+        return {"ok": False, "error": "rakazo-page-browser returned non-object JSON"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Invalid JSON from rakazo-page-browser: {exc}"}
+
+
+def navigate_url(url: str, helper_bin: str = "rakazo-page-browser") -> dict[str, Any]:
+    if not shutil.which(helper_bin) and not os.path.isfile(helper_bin):
+        return {"ok": False, "error": f"{helper_bin} is not installed in PATH"}
+    proc = subprocess.run(
+        [helper_bin, "navigate", json.dumps({"url": url})],
+        capture_output=True,
+        text=True,
+    )
+    res = parse_page_browser_output(proc)
+    if proc.returncode != 0:
+        res["ok"] = False
+        res.setdefault("error", f"exit code {proc.returncode}")
+    return res
+
+
+def advance_next_clip(selector: str, helper_bin: str = "rakazo-page-browser") -> dict[str, Any]:
+    if not shutil.which(helper_bin) and not os.path.isfile(helper_bin):
+        return {"ok": False, "clicked": False, "error": f"{helper_bin} is not installed in PATH"}
+    proc = subprocess.run(
+        [helper_bin, "click_selector", json.dumps({"selector": selector})],
+        capture_output=True,
+        text=True,
+    )
+    res = parse_page_browser_output(proc)
+    if proc.returncode != 0 or res.get("clicked") is False:
+        res["ok"] = False
+        res.setdefault("error", f"click_selector failed (exit {proc.returncode})")
+    return res
+
+
 def convert_to_mp3(video_path: Path, mp3_path: Path) -> bool:
     cmd = [
         "ffmpeg",
@@ -51,7 +97,7 @@ def convert_to_mp3(video_path: Path, mp3_path: Path) -> bool:
         str(mp3_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode == 0 and mp3_path.exists()
+    return proc.returncode == 0 and mp3_path.exists() and mp3_path.stat().st_size > 0
 
 
 def record_screen_clip(
@@ -78,7 +124,6 @@ def record_screen_clip(
         "-i",
         display,
     ]
-    # Attach PulseAudio monitor if pactl sees the source
     has_pulse = shutil.which("pactl") is not None
     if has_pulse:
         cmd.extend(["-f", "pulse", "-i", audio_source])
@@ -98,12 +143,7 @@ def record_screen_clip(
         cmd.extend(["-c:a", "aac", "-b:a", "128k"])
     cmd.append(str(output_mp4))
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode == 0 and output_mp4.exists()
-
-
-def navigate_url(url: str) -> None:
-    if shutil.which("rakazo-page-browser"):
-        subprocess.run(["rakazo-page-browser", "open", url], capture_output=True, text=True)
+    return proc.returncode == 0 and output_mp4.exists() and output_mp4.stat().st_size > 0
 
 
 def upload_with_rclone(local_path: Path, rclone_dest: str) -> bool:
@@ -130,7 +170,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--status-file", default=DEFAULT_STATUS_FILE, help="Watchdog heartbeat JSON path.")
     parser.add_argument("--resume", action="store_true", help="Resume from the last unfinished clip in status-file.")
     parser.add_argument("--rclone-dest", default="", help="Optional rclone destination (e.g. gdrive:RakazoRecordings).")
-    parser.add_argument("--next-selector", default="", help="Optional CSS selector to click between clips when not using separate URLs.")
+    parser.add_argument("--next-selector", default="", help="Optional CSS selector or e<N> ref to click between clips.")
     parser.add_argument("--status-only", action="store_true", help="Print current watchdog status JSON and exit.")
     return parser.parse_args(argv)
 
@@ -157,7 +197,9 @@ def main(argv: list[str] | None = None) -> int:
 
     existing = load_status(status_path) if args.resume else {}
     completed_indices: set[int] = set(existing.get("completedIndices", []))
-    completed_clips: list[dict[str, Any]] = list(existing.get("clips", []))
+    completed_clips: list[dict[str, Any]] = [
+        c for c in existing.get("clips", []) if isinstance(c, dict) and c.get("ok") is True
+    ]
 
     status_payload: dict[str, Any] = {
         "status": "running",
@@ -171,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     write_status(status_path, status_payload)
 
     display = os.environ.get("DISPLAY", ":1")
+    aborted_by_navigation_error = False
+
     for idx in range(1, total_clips + 1):
         if idx in completed_indices:
             continue
@@ -180,8 +224,23 @@ def main(argv: list[str] | None = None) -> int:
         status_payload["currentUrl"] = clip_url
         write_status(status_path, status_payload)
 
+        nav_result: dict[str, Any] | None = None
         if clip_url:
-            navigate_url(clip_url)
+            nav_result = navigate_url(clip_url)
+            if nav_result.get("ok") is not True:
+                clip_record = {
+                    "index": idx,
+                    "url": clip_url,
+                    "mp4": None,
+                    "mp3": None,
+                    "uploaded": False,
+                    "ok": False,
+                    "navigationError": nav_result.get("error") or "Navigation failed",
+                }
+                completed_clips.append(clip_record)
+                status_payload["clips"] = completed_clips
+                write_status(status_path, status_payload)
+                continue
             time.sleep(2.0)
 
         stem = f"clip_{idx:02d}"
@@ -200,29 +259,38 @@ def main(argv: list[str] | None = None) -> int:
 
         clip_record = {
             "index": idx,
-            "url": clip_url,
+            "url": (nav_result or {}).get("url") or clip_url,
+            "title": (nav_result or {}).get("title"),
             "mp4": str(mp4_path) if recorded else None,
             "mp3": str(mp3_path) if mp3_ok else None,
             "uploaded": uploaded,
             "ok": recorded,
         }
-        completed_clips.append(clip_record)
         if recorded:
             completed_indices.add(idx)
 
+        if args.next_selector and idx < total_clips:
+            adv = advance_next_clip(args.next_selector)
+            clip_record["advancedNext"] = bool(adv.get("ok"))
+            if adv.get("ok") is not True:
+                clip_record["advanceError"] = adv.get("error") or "Failed to advance to next clip"
+                aborted_by_navigation_error = True
+            else:
+                time.sleep(1.5)
+
+        completed_clips.append(clip_record)
         status_payload["completedIndices"] = sorted(completed_indices)
         status_payload["clips"] = completed_clips
         write_status(status_path, status_payload)
 
-        if args.next_selector and idx < total_clips and shutil.which("rakazo-page-browser"):
-            subprocess.run(
-                ["rakazo-page-browser", "click", args.next_selector],
-                capture_output=True,
-                text=True,
-            )
-            time.sleep(1.5)
+        if aborted_by_navigation_error:
+            break
 
-    status_payload["status"] = "completed" if len(completed_indices) == total_clips else "partial"
+    status_payload["status"] = (
+        "completed"
+        if len(completed_indices) == total_clips and not aborted_by_navigation_error
+        else "partial"
+    )
     write_status(status_path, status_payload)
     print(json.dumps(status_payload, ensure_ascii=False, indent=2))
     return 0 if status_payload["status"] == "completed" else 1

@@ -237,8 +237,8 @@ export const builtinAgentTools: ConnectorTool[] = [
               secret: { type: "string", description: "Saved login name for fill_secret." },
               field: {
                 type: "string",
-                enum: ["username", "password"],
-                description: "Login field for fill_secret.",
+                enum: ["username", "password", "totp"],
+                description: "Login field for fill_secret (username, password, or totp).",
               },
             },
             required: ["kind", "ref"],
@@ -578,17 +578,24 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "web_fetch",
     description:
-      "Fetch a public http(s) page and return readable text (title + content). Read-only; no JavaScript. Use after web_search when you need the page itself.",
+      "Fetch one or more public http(s) pages and return readable text (title + content). Read-only; no JavaScript. Pass url for a single page or urls (up to 10) for parallel batch fetching. Use after web_search when you need the page itself.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "Page URL (http or https)." },
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+          description: "Batch of up to 10 page URLs (http or https) to fetch concurrently.",
+        },
         maxChars: {
           type: "number",
           description: "Max characters of body text (default 8000).",
         },
       },
-      required: ["url"],
+      anyOf: [{ required: ["url"] }, { required: ["urls"] }],
     },
     readOnly: true,
   },

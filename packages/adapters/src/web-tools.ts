@@ -24,12 +24,14 @@ export async function webSearchFromTool(
 }
 
 const MAX_BATCH_FETCH_URLS = 10;
+const MAX_BATCH_TOTAL_CHARS = 50_000;
 
 export async function webFetchFromTool(
   fetchProvider: WebFetchProvider,
   context: AdapterContext,
   args: Record<string, unknown>,
 ) {
+  context.signal.throwIfAborted();
   const maxChars = clampMaxChars(args.maxChars);
   if (Array.isArray(args.urls)) {
     const rawUrls = args.urls
@@ -37,18 +39,24 @@ export async function webFetchFromTool(
       .filter((u) => u.length > 0)
       .slice(0, MAX_BATCH_FETCH_URLS);
     if (rawUrls.length === 0) return { error: "urls must contain at least one non-empty URL" };
+    const perPageMaxChars = Math.max(
+      100,
+      Math.min(maxChars, Math.floor(MAX_BATCH_TOTAL_CHARS / rawUrls.length)),
+    );
     const pages = await Promise.all(
       rawUrls.map(async (targetUrl) => {
+        context.signal.throwIfAborted();
         try {
           return await fetchProvider.fetch(
             {
               url: targetUrl,
-              maxChars,
+              maxChars: perPageMaxChars,
               signal: context.signal,
             },
             context,
           );
         } catch (error) {
+          context.signal.throwIfAborted();
           return {
             url: targetUrl,
             error: error instanceof Error ? error.message : String(error),
@@ -71,7 +79,9 @@ export async function webFetchFromTool(
     );
     return result;
   } catch (error) {
+    context.signal.throwIfAborted();
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }
+
 

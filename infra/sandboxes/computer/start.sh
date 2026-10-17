@@ -69,6 +69,14 @@ if [ -x /usr/libexec/xdg-desktop-portal ] && [ -x /usr/libexec/xdg-desktop-porta
   /usr/libexec/xdg-desktop-portal-gtk >/tmp/rakazo/portal-gtk.log 2>&1 &
 fi
 
+# Start a virtual PulseAudio sink (rakazo_sink) so Chromium audio output can be
+# captured via `ffmpeg -f pulse -i rakazo_sink.monitor` during screen recordings.
+if command -v pulseaudio >/dev/null 2>&1; then
+  pulseaudio --start --exit-idle-time=-1 >/tmp/rakazo/pulseaudio.log 2>&1 || true
+  pactl load-module module-null-sink sink_name=rakazo_sink sink_properties=device.description="Rakazo_Virtual_Speaker" >/dev/null 2>&1 || true
+  pactl set-default-sink rakazo_sink >/dev/null 2>&1 || true
+fi
+
 xsetroot -solid "#111113" >/dev/null 2>&1 || true
 mkdir -p /tmp/fluxbox-home/.fluxbox
 cp /etc/rakazo/fluxbox/init /tmp/fluxbox-home/.fluxbox/init

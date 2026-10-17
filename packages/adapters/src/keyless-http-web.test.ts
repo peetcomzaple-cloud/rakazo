@@ -123,6 +123,27 @@ describe("web tool apply with fake provider", () => {
       error: "boom",
     });
   });
+
+  it("fetches multiple URLs concurrently via batch urls parameter", async () => {
+    const fake = new FakeWebProvider();
+    fake.fetchResult = {
+      url: "https://example.test/page",
+      title: "Batch Page",
+      text: "Parallel content",
+      truncated: false,
+    };
+    const res = await webFetchFromTool(fake, ctx, {
+      urls: ["https://example.test/1", "https://example.test/2", "https://example.test/3"],
+      maxChars: 500,
+    });
+    expect(res).toMatchObject({
+      pages: [
+        { url: "https://example.test/1", title: "Batch Page", text: "Parallel content" },
+        { url: "https://example.test/2", title: "Batch Page", text: "Parallel content" },
+        { url: "https://example.test/3", title: "Batch Page", text: "Parallel content" },
+      ],
+    });
+  });
 });
 
 describe("web tool clamps", () => {
@@ -135,3 +156,4 @@ describe("web tool clamps", () => {
     expect(clampMaxChars(999_999)).toBe(50_000);
   });
 });
+

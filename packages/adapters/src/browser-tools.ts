@@ -28,9 +28,14 @@ export type SecretFillStep = {
   field: LoginField;
 };
 export type BrowserActInput = BrowserActStep | SecretFillStep;
-export type ResolveSecretFill = (
-  step: SecretFillStep,
-) => Promise<{ text: string; origin: string } | { error: string }>;
+export type ResolveSecretFill =
+  | ((step: SecretFillStep) => Promise<{ text: string; origin: string } | { error: string }>)
+  | ((step: {
+      kind?: "fill_secret";
+      ref?: string;
+      secret?: string;
+      field: "username" | "password";
+    }) => Promise<{ text: string; origin: string } | { error: string }>);
 
 export interface BrowserNavigateToolOptions {
   spaceId?: string;
@@ -254,7 +259,7 @@ export async function browserActFromTool(
         continue;
       }
       const resolved = options.resolveSecretFill
-        ? await options.resolveSecretFill(step)
+        ? await options.resolveSecretFill(step as never)
         : { error: "Saved logins are unavailable here." };
       if ("error" in resolved) return { ok: false, completed: 0, error: resolved.error };
       actions.push({ kind: "fill", ref: step.ref, text: resolved.text, origin: resolved.origin });
@@ -394,8 +399,8 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     if (!ref) throw new Error(`browser_act action ${index} requires ref`);
     if (kind === "fill_secret") {
       const field = action.field;
-      if (field !== "username" && field !== "password") {
-        throw new Error("browser_act fill_secret field must be username or password");
+      if (field !== "username" && field !== "password" && field !== "totp") {
+        throw new Error("browser_act fill_secret field must be username or password (or totp)");
       }
       if (action.secret !== undefined) {
         const secret = String(action.secret).trim();

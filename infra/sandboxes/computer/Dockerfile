@@ -53,11 +53,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     pandoc \
     python3-openpyxl \
+    python3-docx \
+    python3-pptx \
+    python3-pypdf \
+    ffmpeg \
+    pulseaudio \
+    pulseaudio-utils \
+    rclone \
+    tesseract-ocr \
+    tesseract-ocr-tha \
+    tesseract-ocr-eng \
   && rm -rf /var/lib/apt/lists/* \
   && pdftotext -v \
   && pdfinfo -v \
   && pandoc --version \
-  && python3 -c 'import openpyxl; print(openpyxl.__version__)' \
+  && ffmpeg -version \
+  && rclone version \
+  && tesseract --version \
+  && python3 -c 'import openpyxl, docx, pptx, pypdf; print(openpyxl.__version__)' \
   && groupadd --gid 1000 rakazo \
   && useradd --uid 1000 --gid rakazo --create-home --shell /bin/bash rakazo \
   && mkdir -p /etc/rakazo/fluxbox \
@@ -115,6 +128,9 @@ COPY --from=capture-builder /build/librakazo-xcapture.so /usr/local/lib/librakaz
 COPY --chmod=755 rakazo-browser /usr/local/bin/rakazo-browser
 COPY --chmod=755 rakazo-focus-or-launch /usr/local/bin/rakazo-focus-or-launch
 COPY --chmod=755 rakazo-page-browser /usr/local/bin/rakazo-page-browser
+COPY --chmod=755 rakazo-record-playlist /usr/local/bin/rakazo-record-playlist
+COPY --chmod=755 rakazo-transcribe /usr/local/bin/rakazo-transcribe
+COPY --chmod=755 rakazo-doc-extract /usr/local/bin/rakazo-doc-extract
 COPY --chmod=644 rakazo-browser.desktop /usr/share/applications/rakazo-browser.desktop
 COPY --chmod=644 fluxbox.init /etc/rakazo/fluxbox/init
 COPY --chmod=644 fluxbox.apps /etc/rakazo/fluxbox/apps
@@ -128,6 +144,7 @@ COPY --chmod=644 rakazo-local-bin.sh /etc/profile.d/rakazo-local-bin.sh
 # Strip CR so shebangs work even if the build context came from a CRLF checkout.
 RUN ldconfig \
   && sed -i 's/\r$//' /usr/local/bin/rakazo-computer /usr/local/lib/rakazo-user-env.sh /usr/local/bin/rakazo-computer-control /usr/local/bin/rakazo-browser /usr/local/bin/rakazo-focus-or-launch /usr/local/bin/rakazo-page-browser \
+    /usr/local/bin/rakazo-record-playlist /usr/local/bin/rakazo-transcribe /usr/local/bin/rakazo-doc-extract \
     /etc/rakazo/fluxbox/init /etc/rakazo/fluxbox/apps /etc/rakazo/fluxbox/menu \
     /etc/profile.d/rakazo-local-bin.sh
 EXPOSE 7070 6080 6081 6082 6083 6084 6085 6086 6087 6088 6089 6090 6091 6092 6093 6094 6095

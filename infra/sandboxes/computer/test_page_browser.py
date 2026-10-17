@@ -418,7 +418,64 @@ class PageBrowserTest(unittest.TestCase):
                 },
             )
 
+    def test_harvest_json_and_download_receipts_and_stealth_challenge(self):
+        client = Mock()
+        client._api_responses = {
+            "session-1": [
+                {
+                    "requestId": "req-1",
+                    "url": "https://api.example.test/v1/items",
+                    "status": 200,
+                    "mimeType": "application/json",
+                }
+            ]
+        }
+        client._downloads = {
+            "guid-1": {
+                "guid": "guid-1",
+                "url": "https://files.example.test/report.pdf",
+                "suggestedFilename": "report.pdf",
+                "state": "completed",
+                "receivedBytes": 4096,
+                "totalBytes": 4096,
+            }
+        }
+
+        def fake_call(method, params=None, *, session_id=None, timeout_s=30.0):
+            if method == "Network.getResponseBody":
+                return {"body": '{"items":[{"id":1,"name":"Alpha"}]}', "base64Encoded": False}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": True}}
+            return {}
+
+        client.call.side_effect = fake_call
+
+        harvested = helper.harvest_json_apis(
+            client, "session-1", {"urlFilter": "api.example.test", "maxItems": 5}
+        )
+        self.assertTrue(harvested["ok"])
+        self.assertEqual(len(harvested["apis"]), 1)
+        self.assertEqual(harvested["apis"][0]["data"]["items"][0]["name"], "Alpha")
+
+        downloads = helper.collect_download_receipts(client)
+        self.assertEqual(len(downloads), 1)
+        self.assertEqual(downloads[0]["name"], "report.pdf")
+        self.assertEqual(downloads[0]["state"], "completed")
+
+        pts = helper.bezier_pointer_points(10.0, 20.0, 210.0, 320.0, steps=12)
+        self.assertEqual(len(pts), 12)
+        self.assertEqual(pts[-1], (210, 320))
+
+        solved = helper.solve_challenge(client, "session-1", {"x": 210, "y": 320})
+        self.assertTrue(solved["ok"])
+        self.assertTrue(solved["solved"])
+        self.assertEqual(solved["clickedAt"], {"x": 210, "y": 320})
+
+        stealth = helper.apply_stealth_evasion(client, "session-1")
+        self.assertEqual(stealth, {"ok": True, "stealth": True})
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -490,5 +490,46 @@ describe("browser tools", () => {
       note: expect.stringContaining("browser_clear_origin_storage"),
     });
   });
+
+  it("supports totp field in fill_secret and verifies RFC 6238 TOTP and multi-origin SSO allowlists", async () => {
+    const { generateTotpCode, isOriginAllowedForLogin } = await import("./bot-secrets.js");
+    expect(
+      parseBrowserActions([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "totp" }]),
+    ).toEqual([{ kind: "fill_secret", ref: "e1", secret: "site_login", field: "totp" }]);
+
+    // RFC 6238 deterministic check with Base32 seed JBSWY3DPEHPK3PXP
+    const code1 = generateTotpCode("JBSWY3DPEHPK3PXP", 59_000);
+    const code2 = generateTotpCode(
+      "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example",
+      59_000,
+    );
+    expect(code1).toMatch(/^\d{6}$/);
+    expect(code1).toBe(code2);
+
+    // Multi-origin SSO allowlist check
+    expect(
+      isOriginAllowedForLogin(
+        "https://teams.microsoft.com",
+        "https://login.microsoftonline.com",
+        ["https://login.microsoftonline.com", "https://login.live.com"],
+      ),
+    ).toBe("https://login.microsoftonline.com");
+    expect(
+      isOriginAllowedForLogin(
+        "https://teams.microsoft.com",
+        "https://evil.example.test",
+        ["https://login.microsoftonline.com"],
+      ),
+    ).toBeNull();
+    // Rejects non-HTTPS in allowedOrigins
+    expect(
+      isOriginAllowedForLogin(
+        "https://teams.microsoft.com",
+        "http://insecure.example.test",
+        ["http://insecure.example.test"],
+      ),
+    ).toBeNull();
+  });
 });
+
 

@@ -86,6 +86,8 @@ class CdpClient:
         self._document_requests: dict[tuple[str, str], dict[str, Any]] = {}
         self._document_responses: dict[str, list[dict[str, Any]]] = {}
         self._document_failures: dict[str, list[dict[str, Any]]] = {}
+        self._api_responses: dict[str, list[dict[str, Any]]] = {}
+        self._downloads: dict[str, dict[str, Any]] = {}
 
     def connect(self) -> None:
         assert self._ws_url.startswith("ws://"), self._ws_url
@@ -283,20 +285,34 @@ class CdpClient:
             if req_url:
                 entry["url"] = req_url
         elif method == "Network.responseReceived":
-            if params.get("type") != "Document":
-                return
+            res_type = params.get("type")
             req_id = str(params.get("requestId") or "")
             response = params.get("response") or {}
             if not isinstance(response, dict):
                 return
-            req_entry = self._document_requests.get((sid, req_id)) or {}
-            headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
             raw_status = response.get("status")
             status_val = (
                 int(raw_status)
                 if isinstance(raw_status, int) and not isinstance(raw_status, bool) and raw_status > 0
                 else None
             )
+            if res_type in ("XHR", "Fetch"):
+                mime = str(response.get("mimeType") or "").lower()
+                resp_url = str(response.get("url") or "")
+                if "json" in mime or resp_url.endswith(".json") or "/api/" in resp_url or "/_api/" in resp_url or "graph.microsoft.com" in resp_url:
+                    self._api_responses.setdefault(sid, []).append(
+                        {
+                            "requestId": req_id,
+                            "url": resp_url,
+                            "status": status_val,
+                            "mimeType": mime,
+                        }
+                    )
+                return
+            if res_type != "Document":
+                return
+            req_entry = self._document_requests.get((sid, req_id)) or {}
+            headers = response.get("headers") if isinstance(response.get("headers"), dict) else {}
             self._document_responses.setdefault(sid, []).append(
                 {
                     "requestId": req_id,
@@ -308,6 +324,26 @@ class CdpClient:
                     "redirectChain": list(req_entry.get("redirectChain") or []),
                 }
             )
+        elif method == "Browser.downloadWillBegin":
+            guid = str(params.get("guid") or "")
+            if guid:
+                self._downloads[guid] = {
+                    "guid": guid,
+                    "url": str(params.get("url") or ""),
+                    "suggestedFilename": str(params.get("suggestedFilename") or "download"),
+                    "state": "inProgress",
+                }
+        elif method == "Browser.downloadProgress":
+            guid = str(params.get("guid") or "")
+            if guid:
+                entry = self._downloads.setdefault(guid, {"guid": guid})
+                entry["state"] = str(params.get("state") or entry.get("state") or "inProgress")
+                if isinstance(params.get("receivedBytes"), int):
+                    entry["receivedBytes"] = int(params["receivedBytes"])
+                if isinstance(params.get("totalBytes"), int):
+                    entry["totalBytes"] = int(params["totalBytes"])
+                if params.get("filePath"):
+                    entry["filePath"] = str(params["filePath"])
         elif method == "Network.loadingFailed":
             req_id = str(params.get("requestId") or "")
             req_entry = self._document_requests.get((sid, req_id))
@@ -1230,6 +1266,205 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
                 "error": str(exc), "fallback": "computer_act"}
 
 
+def collect_download_receipts(
+    client: Any,
+    download_dir: str | None = None,
+) -> list[dict[str, Any]]:
+    target_dir = download_dir or os.path.expanduser("~/Downloads")
+    receipts: list[dict[str, Any]] = []
+    downloads = getattr(client, "_downloads", None)
+    if isinstance(downloads, dict):
+        for guid, info in downloads.items():
+            if not isinstance(info, dict):
+                continue
+            file_path = str(info.get("filePath") or "")
+            if not file_path and info.get("suggestedFilename"):
+                candidate = os.path.join(target_dir, str(info["suggestedFilename"]))
+                if os.path.isfile(candidate):
+                    file_path = candidate
+            entry: dict[str, Any] = {
+                "guid": guid,
+                "url": str(info.get("url") or ""),
+                "name": str(info.get("suggestedFilename") or os.path.basename(file_path) or "download"),
+                "state": str(info.get("state") or "unknown"),
+            }
+            if file_path and os.path.isfile(file_path):
+                try:
+                    data = Path(file_path).read_bytes()
+                    entry["path"] = file_path
+                    entry["size"] = len(data)
+                    entry["sha256"] = hashlib.sha256(data).hexdigest()
+                except OSError:
+                    entry["path"] = file_path
+            receipts.append(entry)
+    return receipts
+
+
+def harvest_json_apis(
+    client: CdpClient,
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    url_filter = str(args.get("urlFilter") or "").strip().lower()
+    max_items = min(max(int(args.get("maxItems") or 10), 1), 50)
+    store = getattr(client, "_api_responses", {})
+    entries = list((store.get(session_id) or store.get("") or []))
+    matched: list[dict[str, Any]] = []
+    for item in reversed(entries):
+        if not isinstance(item, dict):
+            continue
+        u = str(item.get("url") or "")
+        if url_filter and url_filter not in u.lower():
+            continue
+        req_id = str(item.get("requestId") or "")
+        body_data: Any = None
+        if req_id:
+            try:
+                raw_body = client.call(
+                    "Network.getResponseBody",
+                    {"requestId": req_id},
+                    session_id=session_id,
+                    timeout_s=5.0,
+                )
+                body_str = str(raw_body.get("body") or "")
+                if raw_body.get("base64Encoded"):
+                    body_str = base64.b64decode(body_str).decode("utf-8", errors="replace")
+                try:
+                    body_data = json.loads(body_str)
+                except Exception:
+                    body_data = body_str[:4000]
+            except Exception:
+                body_data = None
+        matched.append(
+            {
+                "url": u,
+                "status": item.get("status"),
+                "mimeType": item.get("mimeType"),
+                **({"data": body_data} if body_data is not None else {}),
+            }
+        )
+        if len(matched) >= max_items:
+            break
+    return {"ok": True, "apis": matched}
+
+
+def bezier_pointer_points(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    steps: int = 12,
+) -> list[tuple[int, int]]:
+    steps = max(2, min(steps, 40))
+    dx = x1 - x0
+    dy = y1 - y0
+    cx1 = x0 + dx * 0.28 - dy * 0.12
+    cy1 = y0 + dy * 0.18 + dx * 0.08
+    cx2 = x0 + dx * 0.72 + dy * 0.09
+    cy2 = y0 + dy * 0.84 - dx * 0.06
+    points: list[tuple[int, int]] = []
+    for i in range(1, steps + 1):
+        t = i / steps
+        inv = 1.0 - t
+        bx = (
+            (inv**3) * x0
+            + 3 * (inv**2) * t * cx1
+            + 3 * inv * (t**2) * cx2
+            + (t**3) * x1
+        )
+        by = (
+            (inv**3) * y0
+            + 3 * (inv**2) * t * cy1
+            + 3 * inv * (t**2) * cy2
+            + (t**3) * y1
+        )
+        points.append((int(round(bx)), int(round(by))))
+    return points
+
+
+STEALTH_INIT_SCRIPT = r"""
+(() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    if (!window.chrome) {
+      window.chrome = { runtime: {} };
+    }
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'th-TH', 'th'] });
+  } catch {}
+})();
+"""
+
+
+def apply_stealth_evasion(client: CdpClient, session_id: str) -> dict[str, Any]:
+    client.call(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": STEALTH_INIT_SCRIPT},
+        session_id=session_id,
+    )
+    try:
+        client.call(
+            "Runtime.evaluate",
+            {"expression": STEALTH_INIT_SCRIPT, "returnByValue": True},
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+    return {"ok": True, "stealth": True}
+
+
+def solve_challenge(
+    client: CdpClient,
+    session_id: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    target_x = args.get("x")
+    target_y = args.get("y")
+    if not (isinstance(target_x, (int, float)) and isinstance(target_y, (int, float))):
+        ensure_helpers(client, session_id)
+        box = eval_json(
+            client,
+            session_id,
+            r"""(() => {
+              const sel = 'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], iframe[src*="hcaptcha"], iframe[src*="recaptcha"], .cf-turnstile, #challenge-stage input[type="checkbox"]';
+              const el = document.querySelector(sel);
+              if (!el) return null;
+              const r = el.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) return null;
+              return { x: Math.round(r.left + Math.min(32, r.width / 2)), y: Math.round(r.top + r.height / 2) };
+            })()""",
+        )
+        if not isinstance(box, dict):
+            return {"ok": False, "solved": False, "error": "No challenge widget located on page"}
+        target_x = int(box["x"])
+        target_y = int(box["y"])
+    start_x = int(args.get("startX") or max(10, int(target_x) - 140))
+    start_y = int(args.get("startY") or max(10, int(target_y) - 90))
+    trajectory = bezier_pointer_points(start_x, start_y, float(target_x), float(target_y), steps=12)
+    for px, py in trajectory:
+        client.call(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseMoved", "x": px, "y": py, "button": "none"},
+            session_id=session_id,
+        )
+    fx, fy = trajectory[-1]
+    client.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1},
+        session_id=session_id,
+    )
+    client.call(
+        "Input.dispatchMouseEvent",
+        {"type": "mouseReleased", "x": fx, "y": fy, "button": "left", "clickCount": 1},
+        session_id=session_id,
+    )
+    return {
+        "ok": True,
+        "solved": True,
+        "clickedAt": {"x": fx, "y": fy},
+        "trajectoryPoints": len(trajectory),
+    }
+
+
 def exit_when_stdin_closes() -> None:
     """The supervisor owns this pipe; losing it cancels this helper, not Chromium."""
     try:
@@ -1291,6 +1526,12 @@ def run(argv: list[str]) -> int:
                 result = act(client, session_id, actions)
             elif command == "clear_origin_storage":
                 result = clear_origin_storage(client, session_id, args)
+            elif command == "harvest_json":
+                result = harvest_json_apis(client, session_id, args)
+            elif command == "solve_challenge":
+                result = solve_challenge(client, session_id, args)
+            elif command == "stealth":
+                result = apply_stealth_evasion(client, session_id)
             else:
                 result = {
                     "ok": False,

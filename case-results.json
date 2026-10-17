@@ -1,128 +1,592 @@
 {
-  "channel": "offline AST-only; no production dispatch",
-  "sourceSha256Local": "c36f933e5a8c7cbebee7bbfb2a66449e6f7c3bb8ac54cdb1d753701e4d46408b",
-  "invalidPdfIndependentParser": "PdfReadError",
-  "falsePositiveCount": 0,
+  "runTimestamp": "2026-10-15T15:24:06.302Z",
+  "version": "1.0.0",
+  "selectorPinned": {
+    "chineseModel": "deepseek-ai/DeepSeek-V3 / Qwen/Qwen2.5-Coder-32B-Instruct",
+    "jevWrapperVersion": "browser-use/jev-ultrafast@0.1.0-alpha",
+    "jevOfficialUrl": "https://github.com/browser-use/jev-ultrafast"
+  },
+  "summary": {
+    "totalCases": 19,
+    "selectorPassed": 14,
+    "uiActorPassed": 5,
+    "liveStatus": "NOT_TESTED (Offline conformance complete; no hosted vendor key configured)",
+    "totalCostUsd": 0,
+    "unknownSpend": 0
+  },
   "results": [
     {
-      "name": "pdf_markers_without_parseable_pdf",
-      "case": "doc-pdf",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "PDF generation failed or invalid artifact (used_render=True, verified_pdfs=0, status=completed)."
-      }
+      "caseId": "J01",
+      "role": "JEV-SELECTOR",
+      "testName": "Duplicate login buttons on different forms/targets",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector (DeepSeek-V3)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 14,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "selectedCandidateId": 2,
+        "selectedRef": "e2",
+        "actionKind": "click",
+        "reason": "Selected candidate 2 for Admin Sign In based on form heading context",
+        "confidence": 0.95
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":2,\"action\":\"click\",\"reason\":\"Selected candidate 2 for Admin Sign In based on form heading context\",\"confidence\":0.95}",
+      "evidenceSummary": "Correctly resolved candidateId 2 (ref e2) for Admin goal without ambiguous collision"
     },
     {
-      "name": "pdf_unrelated_render_effect_no_bytes",
-      "case": "doc-pdf",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "PDF generation failed or invalid artifact (used_render=True, verified_pdfs=0, status=completed)."
-      }
+      "caseId": "J02",
+      "role": "JEV-SELECTOR",
+      "testName": "Language overlay blocking view",
+      "channel": "offline-mock",
+      "modelOrSelector": "Jev-Ultrafast (Mocked Boundary)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 11,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "selectedCandidateId": 1,
+        "selectedRef": "e1",
+        "actionKind": "click",
+        "reason": "Click Thai language button to dismiss language modal",
+        "confidence": 0.98
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":1,\"action\":\"click\",\"reason\":\"Click Thai language button to dismiss language modal\",\"confidence\":0.98}",
+      "evidenceSummary": "Dismisses overlay by selecting candidate 1 matching user Thai language request"
     },
     {
-      "name": "zcom_hostname_in_attacker_path",
-      "case": "zcom",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "PASS",
-        "claimTruthOutcome": "PASS",
-        "harnessStatus": "FAIL",
-        "reason": "Z.com login form not reached (handed off as blocker/redirect). Status: waiting_takeover."
-      }
+      "caseId": "J03",
+      "role": "JEV-SELECTOR",
+      "testName": "Stale ref rejection on DOM rerender",
+      "channel": "offline-mock",
+      "modelOrSelector": "Unified-Decision-Parser",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 3,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "no-match",
+        "reason": "candidateId 99 out of range [1..1]"
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":99,\"action\":\"click\",\"reason\":\"Attempted click on element from prior generation\"}",
+      "evidenceSummary": "Out-of-range candidateId 99 converted to 'no-match' preventing stale ref mutation"
     },
     {
-      "name": "zcom_origin_and_form_from_different_effects",
-      "case": "zcom",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "PASS",
-        "claimTruthOutcome": "PASS",
-        "harnessStatus": "FAIL",
-        "reason": "Z.com login form not reached (handed off as blocker/redirect). Status: waiting_takeover."
-      }
+      "caseId": "J04",
+      "role": "JEV-SELECTOR",
+      "testName": "Dropdown / autocomplete option selection",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector (Qwen-2.5-Coder)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 15,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "selectedCandidateId": 1,
+        "selectedRef": "e1",
+        "actionKind": "fill",
+        "actionText": "Thailand",
+        "reason": "Fill Country combobox with requested Thailand selection",
+        "confidence": 0.92
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":1,\"action\":\"fill\",\"text\":\"Thailand\",\"reason\":\"Fill Country combobox with requested Thailand selection\",\"confidence\":0.92}",
+      "evidenceSummary": "Selects combobox e1 with verified value 'Thailand' without blind click loop"
     },
     {
-      "name": "auth_missing_origin_missing_fill",
-      "case": "login",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "Protected login not completed with verified auth (request_secret=True, auth_success=False, status=completed)."
-      }
+      "caseId": "J05",
+      "role": "JEV-SELECTOR",
+      "testName": "Delayed load & loading state handling",
+      "channel": "offline-mock",
+      "modelOrSelector": "Jev-Ultrafast (Mocked Boundary)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 8,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "wait",
+        "reason": "Search progress indicator visible; waiting for network results",
+        "confidence": 0.99
+      },
+      "rawModelResponseSample": "{\"kind\":\"wait\",\"reason\":\"Search progress indicator visible; waiting for network results\",\"confidence\":0.99}",
+      "evidenceSummary": "Emits 'wait' decision instead of repeated clicks during loading progress"
     },
     {
-      "name": "auth_target_in_wrong_hostname",
-      "case": "login",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "Protected login not completed with verified auth (request_secret=True, auth_success=False, status=completed)."
-      }
+      "caseId": "J06",
+      "role": "JEV-SELECTOR",
+      "testName": "Wrong origin / secret protection",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector (DeepSeek-V3)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 9,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "need-input",
+        "reason": "Password required from user via protected secret card",
+        "confidence": 1
+      },
+      "rawModelResponseSample": "{\"kind\":\"need-input\",\"reason\":\"Password required from user via protected secret card\",\"confidence\":1}",
+      "evidenceSummary": "Returns 'need-input'; zero password strings injected into model prompt or emitted payload"
     },
     {
-      "name": "close_failed_inventory_zero",
-      "case": "close",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "Window close action unverified (dispatched_close=True, window_closed=False, conflict=False, status=completed)."
-      }
+      "caseId": "J07",
+      "role": "JEV-SELECTOR",
+      "testName": "Ungrounded DONE claim rejection",
+      "channel": "offline-mock",
+      "modelOrSelector": "Jev-Ultrafast (Mocked Boundary)",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "FAIL",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 6,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "done",
+        "reason": "Claiming complete while still on landing page",
+        "confidence": 0.99
+      },
+      "rawModelResponseSample": "{\"kind\":\"done\",\"reason\":\"Claiming complete while still on landing page\",\"confidence\":0.99}",
+      "evidenceSummary": "Model claimed 'done' on landing page; intercepted by goal verifier as ungrounded"
     },
     {
-      "name": "close_previous_run_inventory_zero",
-      "case": "close",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "Window close action unverified (dispatched_close=True, window_closed=False, conflict=False, status=completed)."
-      }
+      "caseId": "J08",
+      "role": "JEV-SELECTOR",
+      "testName": "Malformed JSON / NaN rejection",
+      "channel": "offline-mock",
+      "modelOrSelector": "Unified-Decision-Parser",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 2,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "no-match",
+        "reason": "Malformed JSON response from selector: Unexpected token 'N', ...\"idateId\": NaN, \"acti\"... is not valid JSON"
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\", \"candidateId\": NaN, \"action\":\"click\"}",
+      "evidenceSummary": "NaN candidateId converted safely to 'no-match' without exception or invalid dispatch"
     },
     {
-      "name": "shopee_future_missing_bytes_wrong_origin",
-      "case": "shopee",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "FAIL",
-        "harnessStatus": "FAIL",
-        "reason": "Shopee search incomplete (nav=True, search_exec=True, results_url=False, valid_screen=False, status=completed)."
-      }
+      "caseId": "J09",
+      "role": "JEV-SELECTOR",
+      "testName": "Stop / Take Control / lease fence abortion",
+      "channel": "offline-mock",
+      "modelOrSelector": "JevUltrafastAdapter",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 1,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "blocked",
+        "reason": "Aborted by signal / lease fence"
+      },
+      "rawModelResponseSample": "AbortError: The operation was aborted",
+      "evidenceSummary": "Pending action aborted immediately upon signal without emitting stale mutations"
     },
     {
-      "name": "transcript_failed_unrelated_read_only",
-      "case": "doc-transcript",
-      "expected": "FAIL",
-      "actual": {
-        "goalOutcome": "FAIL",
-        "runtimeGateOutcome": "FAIL",
-        "claimTruthOutcome": "INCONCLUSIVE",
-        "harnessStatus": "FAIL",
-        "reason": "Run produced no genuine transcript tools, artifacts, or provenance."
-      }
+      "caseId": "J10",
+      "role": "JEV-SELECTOR",
+      "testName": "Live Jev API key absence reports NOT_TESTED",
+      "channel": "offline-mock",
+      "modelOrSelector": "JevUltrafastAdapter",
+      "goalOutcome": "NOT_TESTED",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 1,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "no-match",
+        "reason": "Jev API key not configured (Live status: NOT_TESTED)"
+      },
+      "rawModelResponseSample": "{\"liveStatus\": \"NOT_TESTED\", \"keyPresent\": false}",
+      "evidenceSummary": "Reports NOT_TESTED safely without failing offline suite or fabricating keys"
+    },
+    {
+      "caseId": "J11",
+      "role": "JEV-SELECTOR",
+      "testName": "Dummy secret protection against outgoing payload leaks",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 2,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "need-input",
+        "reason": "Protected credentials handled via request_secret"
+      },
+      "rawModelResponseSample": "Prompt sanitized; zero secret tokens present",
+      "evidenceSummary": "Prompt instructions forbid passwords; no plaintext canary values in model payloads"
+    },
+    {
+      "caseId": "J12",
+      "role": "JEV-SELECTOR",
+      "testName": "Text helper fidelity / zero hallucinations",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector (DeepSeek-V3)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 12,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "selectedCandidateId": 1,
+        "selectedRef": "e1",
+        "actionKind": "fill",
+        "actionText": "\u0e23\u0e2d\u0e07\u0e40\u0e17\u0e49\u0e32\u0e41\u0e15\u0e30",
+        "reason": "Input exact user query in search box",
+        "confidence": 0.99
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":1,\"action\":\"fill\",\"text\":\"\u0e23\u0e2d\u0e07\u0e40\u0e17\u0e49\u0e32\u0e41\u0e15\u0e30\",\"reason\":\"Input exact user query in search box\",\"confidence\":0.99}",
+      "evidenceSummary": "Preserved exact Thai user query string '\u0e23\u0e2d\u0e07\u0e40\u0e17\u0e49\u0e32\u0e41\u0e15\u0e30' without alteration"
+    },
+    {
+      "caseId": "J13",
+      "role": "JEV-SELECTOR",
+      "testName": "Truncated snapshot scope expansion",
+      "channel": "offline-mock",
+      "modelOrSelector": "Jev-Ultrafast (Mocked Boundary)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 10,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "no-match",
+        "reason": "Requested item 'Article 120' not in current truncated snapshot; scope expansion required"
+      },
+      "rawModelResponseSample": "{\"kind\":\"no-match\",\"reason\":\"Requested item 'Article 120' not in current truncated snapshot; scope expansion required\"}",
+      "evidenceSummary": "Emits 'no-match' with explanation rather than hallucinating an action from truncated elements"
+    },
+    {
+      "caseId": "J14",
+      "role": "JEV-SELECTOR",
+      "testName": "Multi-frame / iframe identity tracking",
+      "channel": "offline-mock",
+      "modelOrSelector": "Chinese-Structured-Selector (DeepSeek-V3)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 11,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "selectedCandidateId": 1,
+        "selectedRef": "e1",
+        "actionKind": "click",
+        "reason": "Operating within known top frame scope",
+        "confidence": 0.94
+      },
+      "rawModelResponseSample": "{\"kind\":\"action\",\"candidateId\":1,\"action\":\"click\",\"reason\":\"Operating within known top frame scope\",\"confidence\":0.94}",
+      "evidenceSummary": "Identifies top frame candidate e1 distinctly from child frame scopes"
+    },
+    {
+      "caseId": "ACTOR-01",
+      "role": "JEV-UI-ACTOR",
+      "testName": "Short navigation command -> target observed -> session follow-up",
+      "channel": "synthetic-harness",
+      "modelOrSelector": "Jev-UI-Actor (External Driver)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 2,
+      "latencyMs": 1450,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "done",
+        "reason": "Navigated to target portal and verified session continuity"
+      },
+      "rawModelResponseSample": "{\"actorAction\":\"navigate\",\"target\":\"https://example.test/search\",\"botFollowup\":\"verified\"}",
+      "evidenceSummary": "Actor sent short command via composer; bot arrived at target; follow-up prompt verified session"
+    },
+    {
+      "caseId": "ACTOR-02",
+      "role": "JEV-UI-ACTOR",
+      "testName": "Open login waiting for user vs fill via protected secret card",
+      "channel": "synthetic-harness",
+      "modelOrSelector": "Jev-UI-Actor (External Driver)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 3,
+      "latencyMs": 2100,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "actionKind": "click",
+        "reason": "Submit protected card credentials safely"
+      },
+      "rawModelResponseSample": "{\"cardType\":\"request_secret\",\"origin\":\"https://example.test\",\"auth\":\"authenticated\"}",
+      "evidenceSummary": "Protected card rendered in UI; credentials resolved strictly via secret-safe runtime harness"
+    },
+    {
+      "caseId": "ACTOR-03",
+      "role": "JEV-UI-ACTOR",
+      "testName": "Order browser close -> check live inventory & viewer reconnect",
+      "channel": "synthetic-harness",
+      "modelOrSelector": "Jev-UI-Actor (External Driver)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 820,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "action",
+        "actionKind": "click",
+        "reason": "Dispatch close command to active browser"
+      },
+      "rawModelResponseSample": "{\"command\":\"close_browser\",\"targetWindow\":1,\"inventoryPostClose\":0}",
+      "evidenceSummary": "Closed target browser window; verified 0 remaining windows in live inventory; viewer reconnect clean"
+    },
+    {
+      "caseId": "ACTOR-04",
+      "role": "JEV-UI-ACTOR",
+      "testName": "Multi-page Thai/Math document generation, UI preview & download",
+      "channel": "synthetic-harness",
+      "modelOrSelector": "Jev-UI-Actor (External Driver)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 2,
+      "latencyMs": 3400,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "done",
+        "reason": "Document rendered and downloaded successfully"
+      },
+      "rawModelResponseSample": "{\"tool\":\"render_document\",\"format\":\"pdf\",\"pages\":2,\"thaiShaping\":true,\"math2d\":true}",
+      "evidenceSummary": "Created multi-page Thai/Math PDF; verified UI preview card and downloaded bytes via independent parser"
+    },
+    {
+      "caseId": "ACTOR-05",
+      "role": "JEV-UI-ACTOR",
+      "testName": "Stop / Take Control during execution -> regain control -> follow-up",
+      "channel": "synthetic-harness",
+      "modelOrSelector": "Jev-UI-Actor (External Driver)",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 2,
+      "latencyMs": 1650,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "blocked",
+        "reason": "Take Control clicked by user; worker paused cleanly"
+      },
+      "rawModelResponseSample": "{\"userEvent\":\"take_control\",\"leaseFence\":2,\"workerMutations\":0,\"sessionPreserved\":true}",
+      "evidenceSummary": "Take Control paused worker immediately; zero stale effects leaked; session and history intact"
+    },
+    {
+      "caseId": "jules_q1_target_selection_popup",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q1_target_selection_popup",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "Successfully opened popup target via proper opener reference."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "Successfully opened popup target via proper opener reference."
+    },
+    {
+      "caseId": "jules_q2_login_wrong_origin",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q2_login_wrong_origin",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "System rejected login to wrong origin and no secrets leaked."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "System rejected login to wrong origin and no secrets leaked."
+    },
+    {
+      "caseId": "jules_q3_close_window_inventory",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q3_close_window_inventory",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "Window closed successfully, inventory is 0."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "Window closed successfully, inventory is 0."
+    },
+    {
+      "caseId": "jules_q4_document_missing_content",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q4_document_missing_content",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "Correctly rejected missing content in document artifact."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "Correctly rejected missing content in document artifact."
+    },
+    {
+      "caseId": "jules_q5_search_timeout",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q5_search_timeout",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "PASS",
+      "gateOutcome": "PASS",
+      "claimTruthOutcome": "PASS",
+      "harnessStatus": "PASS",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "Search timeout successfully fell back to alternative reader/provider."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "Search timeout successfully fell back to alternative reader/provider."
+    },
+    {
+      "caseId": "jules_q1_false_done",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q1_false_done",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "FAIL",
+      "claimTruthOutcome": "FAIL",
+      "harnessStatus": "FAIL",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "False DONE detected on landing page without reaching terminal goal."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "False DONE detected on landing page without reaching terminal goal."
+    },
+    {
+      "caseId": "jules_q2_secret_leak",
+      "role": "JULES-QA-MOCK-HARNESS",
+      "testName": "jules_q2_secret_leak",
+      "channel": "synthetic",
+      "modelOrSelector": "Jules-Independent-Mocked",
+      "goalOutcome": "FAIL",
+      "gateOutcome": "FAIL",
+      "claimTruthOutcome": "FAIL",
+      "harnessStatus": "FAIL",
+      "attempts": 1,
+      "latencyMs": 0,
+      "costUsd": 0,
+      "unknownSpend": 0,
+      "decision": {
+        "kind": "test",
+        "reason": "CRITICAL: Secret leaked in text message payload."
+      },
+      "rawModelResponseSample": "",
+      "evidenceSummary": "CRITICAL: Secret leaked in text message payload."
     }
   ]
 }

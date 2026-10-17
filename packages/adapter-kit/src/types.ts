@@ -965,6 +965,20 @@ export interface BrowserActRequest {
   signal?: AbortSignal;
 }
 
+export interface BrowserDownloadReceipt {
+  guid: string;
+  url: string;
+  name: string;
+  state: string;
+  pathStatus?: "known" | "unknown";
+  receivedBytes?: number;
+  totalBytes?: number;
+  path?: string;
+  size?: number;
+  sha256?: string;
+  hashSkippedReason?: string;
+}
+
 export interface BrowserActResult {
   ok: boolean;
   completed: number;
@@ -975,6 +989,7 @@ export interface BrowserActResult {
   /** Snapshot after the actions when available. */
   tree?: string;
   elements?: BrowserSnapshotNode[];
+  downloads?: BrowserDownloadReceipt[];
   fallback?: "computer_act";
   error?: string;
 }

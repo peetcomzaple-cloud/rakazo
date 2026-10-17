@@ -446,6 +446,7 @@ class PageBrowserTest(unittest.TestCase):
                     "guid": "guid-1",
                     "url": "https://files.example.test/report.pdf",
                     "suggestedFilename": "report.pdf",
+                    "filePath": str(small_file),
                     "state": "completed",
                     "receivedBytes": 15,
                     "totalBytes": 15,
@@ -496,12 +497,14 @@ class PageBrowserTest(unittest.TestCase):
                 client, download_dir=tmpdir, max_hash_bytes=1024
             )
             self.assertEqual(len(downloads), 2)
-            # guid-1 resolved collision file report (1).pdf and hashed it
+            # guid-1 has explicit filePath to report (1).pdf and state=completed
             self.assertEqual(downloads[0]["name"], "report.pdf")
+            self.assertEqual(downloads[0]["pathStatus"], "known")
             self.assertTrue(downloads[0]["path"].endswith("report (1).pdf"))
             self.assertEqual(downloads[0]["size"], 15)
             self.assertTrue(bool(downloads[0].get("sha256")))
             # guid-2 exceeded max_hash_bytes=1024, so sha256 is skipped safely
+            self.assertEqual(downloads[1]["pathStatus"], "known")
             self.assertEqual(downloads[1]["size"], 2048)
             self.assertIsNone(downloads[1].get("sha256"))
             self.assertEqual(downloads[1].get("hashSkippedReason"), "exceeds_50mb_limit")
@@ -521,20 +524,279 @@ class PageBrowserTest(unittest.TestCase):
             self.assertTrue(unsolved["requiresTakeover"])
             self.assertEqual(unsolved["fallback"], "request_takeover")
 
-            # 2) When challenge DOM clears or token is populated, solve_challenge reports verified
-            challenge_state["hasToken"] = True
-            challenge_state["hasChallengeDom"] = False
+            # 2) When challenge DOM clears and a fresh token is populated on a valid page, solve_challenge reports verified
+            obs_queue = [
+                {
+                    "hasToken": False,
+                    "tokenValue": "",
+                    "hasChallengeDom": True,
+                    "httpStatus": 200,
+                    "title": "Just a moment...",
+                    "bodySnippet": "Verify you are human",
+                    "url": "https://example.test/protected",
+                },
+                {
+                    "hasToken": True,
+                    "tokenValue": "fresh-turnstile-token-999",
+                    "hasChallengeDom": False,
+                    "httpStatus": 200,
+                    "title": "Protected Dashboard",
+                    "bodySnippet": "Welcome back",
+                    "url": "https://example.test/protected",
+                },
+            ]
+
+            def fake_call_transition(method, params=None, *, session_id=None, timeout_s=30.0):
+                if method == "Runtime.evaluate":
+                    expr = (params or {}).get("expression", "")
+                    if "hasChallengeDom" in expr:
+                        return {"result": {"value": obs_queue.pop(0) if obs_queue else dict(challenge_state)}}
+                    return {"result": {"value": True}}
+                return fake_call(method, params, session_id=session_id, timeout_s=timeout_s)
+
+            client.call.side_effect = fake_call_transition
             solved = helper.solve_challenge(
                 client, "session-1", {"x": 210, "y": 320, "settleMs": 0}
             )
             self.assertTrue(solved["ok"])
             self.assertTrue(solved["dispatched"])
             self.assertTrue(solved["solved"])
+            self.assertFalse(solved["businessGoalVerified"])
             self.assertEqual(solved["status"], "verified")
             self.assertEqual(solved["clickedAt"], {"x": 210, "y": 320})
 
+            # 3) Stale pre-existing token MUST NOT be reported as solved
+            stale_queue = [
+                {
+                    "hasToken": True,
+                    "tokenValue": "stale-token-123",
+                    "hasChallengeDom": False,
+                    "httpStatus": 200,
+                    "title": "Login",
+                    "bodySnippet": "Sign in",
+                    "url": "https://example.test/login",
+                },
+                {
+                    "hasToken": True,
+                    "tokenValue": "stale-token-123",
+                    "hasChallengeDom": False,
+                    "httpStatus": 200,
+                    "title": "Login",
+                    "bodySnippet": "Sign in",
+                    "url": "https://example.test/login",
+                },
+            ]
+            obs_queue.extend(stale_queue)
+            stale_res = helper.solve_challenge(
+                client, "session-1", {"x": 210, "y": 320, "settleMs": 0}
+            )
+            self.assertFalse(stale_res["ok"])
+            self.assertFalse(stale_res["solved"])
+            self.assertEqual(stale_res["status"], "still_challenged")
+
+            # 4) Challenge DOM disappearing because page navigated to HTTP 502 error page MUST NOT report solved
+            error_queue = [
+                {
+                    "hasToken": False,
+                    "tokenValue": "",
+                    "hasChallengeDom": True,
+                    "httpStatus": 403,
+                    "title": "Just a moment...",
+                    "bodySnippet": "Verify you are human",
+                    "url": "https://example.test/protected",
+                },
+                {
+                    "hasToken": False,
+                    "tokenValue": "",
+                    "hasChallengeDom": False,
+                    "httpStatus": 502,
+                    "title": "502 Bad Gateway",
+                    "bodySnippet": "nginx 502 bad gateway",
+                    "url": "https://example.test/protected",
+                },
+            ]
+            obs_queue.extend(error_queue)
+            err_res = helper.solve_challenge(
+                client, "session-1", {"x": 210, "y": 320, "settleMs": 0}
+            )
+            self.assertFalse(err_res["ok"])
+            self.assertFalse(err_res["solved"])
+            self.assertEqual(err_res["status"], "navigation_error")
+            self.assertTrue(err_res["requiresTakeover"])
+
             stealth = helper.apply_stealth_evasion(client, "session-1")
             self.assertEqual(stealth, {"ok": True, "stealth": True})
+
+    def test_cross_cli_state_persistence_and_harvest_json_redaction_and_bounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "browser-state.json")
+            report_file = os.path.join(tmpdir, "report-final.pdf")
+            Path(report_file).write_bytes(b"VERIFIED_PDF_DATA")
+
+            # Simulate CLI process #1 receiving CDP download & API response events
+            client1 = helper.CdpClient("ws://127.0.0.1:9222/devtools/browser/1", state_file=state_path)
+            client1._handle_event(
+                {
+                    "method": "Browser.downloadWillBegin",
+                    "params": {
+                        "guid": "dl-guid-101",
+                        "url": "https://files.example.test/report-final.pdf",
+                        "suggestedFilename": "report-final.pdf",
+                    },
+                }
+            )
+            client1._handle_event(
+                {
+                    "method": "Browser.downloadProgress",
+                    "params": {
+                        "guid": "dl-guid-101",
+                        "state": "completed",
+                        "receivedBytes": 17,
+                        "totalBytes": 17,
+                        "filePath": report_file,
+                    },
+                }
+            )
+            client1._api_responses["session-1"] = [
+                {
+                    "requestId": "req-secret",
+                    "url": "https://api.example.test/v1/auth/session",
+                    "status": 200,
+                    "mimeType": "application/json",
+                }
+            ]
+            client1.call = Mock(
+                return_value={
+                    "body": json.dumps(
+                        {
+                            "user": "alice",
+                            "accessToken": "super-secret-jwt",
+                            "nested": {"password": "my-password", "apiKey": "k-12345", "visible": "ok"},
+                        }
+                    ),
+                    "base64Encoded": False,
+                }
+            )
+            helper.flush_and_persist_state(client1, "session-1")
+
+            # Simulate CLI process #2 starting fresh and reading persisted state
+            client2 = helper.CdpClient("ws://127.0.0.1:9222/devtools/browser/1", state_file=state_path)
+            client2.call = Mock(return_value={})
+            receipts = helper.collect_download_receipts(client2, download_dir=tmpdir)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["guid"], "dl-guid-101")
+            self.assertEqual(receipts[0]["pathStatus"], "known")
+            self.assertEqual(receipts[0]["path"], report_file)
+
+            harvested = helper.harvest_json_apis(client2, "session-2", {"urlFilter": "api.example.test"})
+            self.assertTrue(harvested["ok"])
+            self.assertEqual(len(harvested["apis"]), 1)
+            api_data = harvested["apis"][0]["data"]
+            self.assertEqual(api_data["user"], "alice")
+            self.assertEqual(api_data["accessToken"], "[REDACTED]")
+            self.assertEqual(api_data["nested"]["password"], "[REDACTED]")
+            self.assertEqual(api_data["nested"]["apiKey"], "[REDACTED]")
+            self.assertEqual(api_data["nested"]["visible"], "ok")
+
+    def test_collect_download_receipts_never_fabricates_identity_from_preexisting_files_or_inprogress_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as other_dir:
+            old_path = Path(tmpdir) / "report.pdf"
+            new_path = Path(tmpdir) / "report (1).pdf"
+            outside_path = Path(other_dir) / "outside.pdf"
+            old_bytes = b"OLD_REPORT_SYNTHETIC_CONTENT"
+            new_bytes = b"NEW_REPORT_SYNTHETIC_CONTENT"
+            old_path.write_bytes(old_bytes)
+            new_path.write_bytes(new_bytes)
+            outside_path.write_bytes(b"OUTSIDE_SECRET")
+
+            # 1) Completed receipt without reported filePath MUST NOT guess report.pdf or report (1).pdf
+            collision_client = Mock()
+            collision_client._downloads = {
+                "new-guid": {
+                    "guid": "new-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "state": "completed",
+                    "receivedBytes": len(new_bytes),
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            collision_receipts = helper.collect_download_receipts(
+                collision_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(collision_receipts), 1)
+            self.assertEqual(collision_receipts[0]["guid"], "new-guid")
+            self.assertEqual(collision_receipts[0]["state"], "completed")
+            self.assertEqual(collision_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", collision_receipts[0])
+            self.assertNotIn("sha256", collision_receipts[0])
+            self.assertNotIn("size", collision_receipts[0])
+
+            # 2) inProgress receipt MUST NOT attach path or sha256 even if old/new files exist or filePath is set
+            inprogress_client = Mock()
+            inprogress_client._downloads = {
+                "in-progress-guid": {
+                    "guid": "in-progress-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "filePath": str(new_path),
+                    "state": "inProgress",
+                    "receivedBytes": 4,
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            inprogress_receipts = helper.collect_download_receipts(
+                inprogress_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(inprogress_receipts), 1)
+            self.assertEqual(inprogress_receipts[0]["guid"], "in-progress-guid")
+            self.assertEqual(inprogress_receipts[0]["state"], "inProgress")
+            self.assertEqual(inprogress_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", inprogress_receipts[0])
+            self.assertNotIn("sha256", inprogress_receipts[0])
+            self.assertNotIn("size", inprogress_receipts[0])
+
+            # 3) Completed receipt with filePath outside download_dir is rejected
+            outside_client = Mock()
+            outside_client._downloads = {
+                "outside-guid": {
+                    "guid": "outside-guid",
+                    "url": "https://files.example.test/outside.pdf",
+                    "suggestedFilename": "outside.pdf",
+                    "filePath": str(outside_path),
+                    "state": "completed",
+                }
+            }
+            outside_receipts = helper.collect_download_receipts(
+                outside_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(outside_receipts), 1)
+            self.assertEqual(outside_receipts[0]["pathStatus"], "unknown")
+            self.assertNotIn("path", outside_receipts[0])
+            self.assertNotIn("sha256", outside_receipts[0])
+
+            # 4) Positive control: completed receipt with explicit filePath inside download_dir succeeds
+            explicit_client = Mock()
+            explicit_client._downloads = {
+                "explicit-guid": {
+                    "guid": "explicit-guid",
+                    "url": "https://files.example.test/report.pdf",
+                    "suggestedFilename": "report.pdf",
+                    "filePath": str(new_path),
+                    "state": "completed",
+                    "receivedBytes": len(new_bytes),
+                    "totalBytes": len(new_bytes),
+                }
+            }
+            explicit_receipts = helper.collect_download_receipts(
+                explicit_client, download_dir=tmpdir
+            )
+            self.assertEqual(len(explicit_receipts), 1)
+            self.assertEqual(explicit_receipts[0]["guid"], "explicit-guid")
+            self.assertEqual(explicit_receipts[0]["state"], "completed")
+            self.assertEqual(explicit_receipts[0]["pathStatus"], "known")
+            self.assertEqual(explicit_receipts[0]["path"], str(new_path))
+            self.assertEqual(explicit_receipts[0]["size"], len(new_bytes))
 
     def test_playlist_recorder_uses_supported_page_browser_commands_and_checks_json_results(self):
         recorder_path = Path(__file__).with_name("rakazo-record-playlist")
@@ -546,8 +808,10 @@ class PageBrowserTest(unittest.TestCase):
 
         seen_cmds: list[list[str]] = []
 
-        def fake_run(cmd, capture_output=True, text=True):
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
             seen_cmds.append(list(cmd))
+            if cmd[0] == "pactl":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Connection failure: Connection refused")
             if cmd[1] == "navigate":
                 payload = json.loads(cmd[2])
                 if "fail" in payload["url"]:
@@ -576,6 +840,7 @@ class PageBrowserTest(unittest.TestCase):
 
         with patch.object(recorder.shutil, "which", return_value="/usr/local/bin/rakazo-page-browser"), \
              patch.object(recorder.subprocess, "run", side_effect=fake_run):
+            self.assertFalse(recorder.has_live_pulse_source("rakazo_sink.monitor"))
             ok_nav = recorder.navigate_url("https://example.test/clip1")
             self.assertTrue(ok_nav["ok"])
             self.assertEqual(seen_cmds[-1][1], "navigate")
@@ -603,8 +868,17 @@ class PageBrowserTest(unittest.TestCase):
         self.assertEqual(transcribe.format_srt_timestamp(65.432), "00:01:05,432")
         self.assertEqual(transcribe.resolve_provider_and_key("", ""), ("groq", ""))
         self.assertEqual(transcribe.resolve_provider_and_key("openai", "sk-test"), ("openai", "sk-test"))
+        self.assertEqual(
+            transcribe.redact_secret("Bearer sk-secret-key-999 failed", "sk-secret-key-999"),
+            "Bearer [REDACTED] failed",
+        )
         # Missing API key returns exit code 2 with structured error
         self.assertEqual(transcribe.main(["dummy.mp3", "--provider", "groq", "--api-key", ""]), 2)
+        # Missing input file with valid key returns exit code 1
+        self.assertEqual(
+            transcribe.main(["/nonexistent/file.mp3", "--provider", "groq", "--api-key", "gsk_test"]),
+            1,
+        )
 
         doc_path = Path(__file__).with_name("rakazo-doc-extract")
         d_loader = SourceFileLoader("rakazo_doc_extract", str(doc_path))
@@ -617,8 +891,21 @@ class PageBrowserTest(unittest.TestCase):
             sample_txt = Path(tmpdir) / "notes.txt"
             sample_txt.write_text("สวัสดีครับ Rakazo Document Test", encoding="utf-8")
             extracted = doc_extract.extract_document(sample_txt)
+            self.assertTrue(extracted["ok"])
             self.assertEqual(extracted["type"], "text")
             self.assertIn("สวัสดีครับ", extracted["text"])
+
+            # Missing document returns ok=False and exit code 1
+            missing_doc = doc_extract.extract_document(Path(tmpdir) / "missing.pdf")
+            self.assertFalse(missing_doc["ok"])
+            self.assertEqual(doc_extract.main([str(Path(tmpdir) / "missing.pdf")]), 1)
+
+            # Corrupt PDF returns ok=False when extractors fail
+            corrupt_pdf = Path(tmpdir) / "corrupt.pdf"
+            corrupt_pdf.write_bytes(b"NOT_A_PDF")
+            with patch.object(doc_extract.shutil, "which", return_value=None):
+                corrupt_res = doc_extract.extract_document(corrupt_pdf)
+                self.assertFalse(corrupt_res["ok"])
 
 
 if __name__ == "__main__":

@@ -266,7 +266,7 @@ def normalize_window_id(raw_id):
         num = int(value, 16) if value.lower().startswith("0x") else int(value, 10)
         return f"0x{num:08x}" if num > 0 else ""
     except ValueError:
-        return value
+        return ""
 
 
 def resolve_browser_profile(display, browser_profile=None):
@@ -328,7 +328,7 @@ def collect_window_inventory(env, browser_profile=None):
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unknown", freshness, None
-    if proc.returncode != 0:
+    if proc.returncode != 0 or not isinstance(proc.stdout, str):
         return "unknown", freshness, None
     windows = []
     seen = set()
@@ -337,14 +337,24 @@ def collect_window_inventory(env, browser_profile=None):
         if not line:
             continue
         parts = line.split(None, 5)
-        if len(parts) < 4:
-            continue
+        if len(parts) < 5:
+            return "unknown", freshness, None
         wid = normalize_window_id(parts[0])
         if not wid or wid in seen:
-            continue
+            return "unknown", freshness, None
+        try:
+            int(parts[1], 10)
+            pid_num = int(parts[2], 10)
+        except ValueError:
+            return "unknown", freshness, None
+        if pid_num < 0:
+            return "unknown", freshness, None
+        wm_class = parts[3].strip()
+        client_host = parts[4].strip()
+        if not wm_class or not client_host:
+            return "unknown", freshness, None
         seen.add(wid)
-        pid_val = int(parts[2]) if parts[2].isdigit() and int(parts[2]) > 0 else None
-        wm_class = parts[3]
+        pid_val = pid_num if pid_num > 0 else None
         title = parts[5].strip() if len(parts) >= 6 else ""
         entry = {
             "id": wid,

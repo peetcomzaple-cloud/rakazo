@@ -54,7 +54,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pandoc \
     python3-openpyxl \
     python3-docx \
-    python3-pptx \
     python3-pypdf \
     ffmpeg \
     pulseaudio \
@@ -70,7 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && ffmpeg -version \
   && rclone version \
   && tesseract --version \
-  && python3 -c 'import openpyxl, docx, pptx, pypdf; print(openpyxl.__version__)' \
+  && python3 -c 'import openpyxl, docx, pypdf; print(openpyxl.__version__)' \
   && groupadd --gid 1000 rakazo \
   && useradd --uid 1000 --gid rakazo --create-home --shell /bin/bash rakazo \
   && mkdir -p /etc/rakazo/fluxbox \
@@ -92,7 +91,9 @@ RUN set -eux; \
   tar -xzf "$archive" -C /usr/local/bin --strip-components=1 "uv-${uv_arch}-unknown-linux-gnu/uv" "uv-${uv_arch}-unknown-linux-gnu/uvx"; \
   rm -f "$archive"; \
   uv --version; \
-  uvx --version
+  uvx --version; \
+  uv pip install --system --break-system-packages python-pptx; \
+  python3 -c 'import pptx; print(pptx.__version__)'
 # Bookworm has no gh package; pin the upstream binary and verify sha256, same as uv.
 ARG GH_VERSION=2.100.0
 RUN set -eux; \
